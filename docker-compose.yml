@@ -2,17 +2,19 @@
 
 services:
   loom:
+    dns:
+      - ${TAILSCALE_DNS:-100.100.100.100}
+      - ${PUBLIC_DNS:-1.1.1.1}
+    dns_search:
+      - ${TAILSCALE_SEARCH:-tail8bd569.ts.net}
     build: .
     ports:
       - "18080:8080"  # Dev port
     volumes:
-      - ./loom.py:/app/loom.py:ro  # Hot reload the main file
-      - /Pondside/Basement/SDK/pondside:/pondside-sdk/pondside:ro  # Pondside SDK
+      - ./src/loom:/app/src/loom:ro  # Hot reload Loom code
     environment:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://alpha-pi:4318
       - OTEL_SERVICE_NAME=loom-dev
       - REDIS_URL=redis://alpha-pi:6379
-      - PYTHONPATH=/pondside-sdk
-    # Hot reload in dev
-    command: ["uvicorn", "loom:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
+    command: ["uvicorn", "loom.app:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
     restart: unless-stopped

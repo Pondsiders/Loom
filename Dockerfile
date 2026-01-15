@@ -5,21 +5,17 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install uv for fast dependency management
+# Install uv and git (needed to fetch SDK from GitHub)
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 RUN pip install uv
 
 # Copy project files
 COPY pyproject.toml .
-COPY loom.py .
+COPY src/ src/
 
-# Install dependencies
+# Install dependencies (including pondside SDK from GitHub)
 RUN uv pip install --system -e .
-
-# Install Pondside SDK (mounted at runtime in dev, copied in prod)
-# For now, expect it to be mounted at /pondside-sdk
-
-ENV PYTHONPATH=/pondside-sdk
 
 EXPOSE 8080
 
-CMD ["uvicorn", "loom:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "loom.app:app", "--host", "0.0.0.0", "--port", "8080"]
