@@ -1,0 +1,18 @@
+# The Loom - Development Configuration
+
+services:
+  loom:
+    build: .
+    ports:
+      - "18080:8080"  # Dev port
+    volumes:
+      - ./loom.py:/app/loom.py:ro  # Hot reload the main file
+      - /Pondside/Basement/SDK/pondside:/pondside-sdk/pondside:ro  # Pondside SDK
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://alpha-pi:4318
+      - OTEL_SERVICE_NAME=loom-dev
+      - REDIS_URL=redis://alpha-pi:6379
+      - PYTHONPATH=/pondside-sdk
+    # Hot reload in dev
+    command: ["uvicorn", "loom:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
+    restart: unless-stopped
