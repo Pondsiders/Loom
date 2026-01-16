@@ -21,9 +21,11 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Paths
-PONDSIDE_PATH = Path(os.getenv("PONDSIDE_PATH", "/Pondside"))
-PROMPT_FILE = PONDSIDE_PATH / "Basement" / "Eavesdrop" / "alpha_compact_prompt.md"
+# Paths - relative to this module's location
+# In Docker: /app/src/loom/compact.py -> /app/prompts/
+# In dev: /Pondside/Basement/Loom/src/loom/compact.py -> /Pondside/Basement/Loom/prompts/
+MODULE_DIR = Path(__file__).parent  # src/loom/
+PROMPT_FILE = MODULE_DIR.parent.parent / "prompts" / "alpha_compact_prompt.md"
 
 # Load Alpha's custom compact prompt
 try:

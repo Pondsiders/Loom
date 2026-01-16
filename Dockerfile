@@ -12,6 +12,7 @@ RUN pip install uv
 # Copy project files
 COPY pyproject.toml .
 COPY src/ src/
+COPY prompts/ prompts/
 
 # Install dependencies (including pondside SDK from GitHub)
 RUN uv pip install --system -e .
