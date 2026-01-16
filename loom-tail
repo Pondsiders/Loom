@@ -1,0 +1,116 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "redis",
+#     "rich",
+# ]
+# ///
+"""
+Tail the Loom's transcript pubsub.
+
+Subscribes to transcript:* channels and pretty-prints what comes through.
+Useful for debugging and watching conversations in real-time.
+
+Usage:
+    ./loom-tail              # All sessions
+    ./loom-tail abc123       # Specific session (prefix match)
+"""
+
+import json
+import sys
+
+import redis
+from rich.console import Console
+from rich.text import Text
+
+REDIS_URL = "redis://alpha-pi:6379"
+
+console = Console()
+
+
+def format_message(data: dict) -> Text:
+    """Format a transcript message for display."""
+    session_short = data.get("session_id", "")[:8]
+    msg_type = data.get("type", "?")
+    role = data.get("role", "")
+    content_types = data.get("content_types", [])
+
+    # Color by role
+    if role == "user":
+        color = "green"
+        symbol = "→"
+    elif role == "assistant":
+        color = "blue"
+        symbol = "←"
+    else:
+        color = "dim"
+        symbol = "·"
+
+    # Build the line
+    text = Text()
+    text.append(f"{symbol} ", style=color)
+    text.append(f"[{session_short}] ", style="dim")
+    text.append(f"{msg_type}", style="bold")
+
+    if role:
+        text.append(f"/{role}", style=color)
+
+    if content_types:
+        text.append(f" ({','.join(content_types)})", style="dim")
+
+    # Extract text preview if present
+    raw = data.get("raw", {})
+    message = raw.get("message", {})
+    content = message.get("content", [])
+
+    preview = ""
+    if isinstance(content, str):
+        preview = content[:100]
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                preview = block.get("text", "")[:100]
+                break
+
+    if preview:
+        # Clean up the preview
+        preview = preview.replace("\n", " ").strip()
+        if len(preview) > 80:
+            preview = preview[:77] + "..."
+        text.append(f"\n   {preview}", style="italic dim")
+
+    return text
+
+
+def main():
+    session_filter = sys.argv[1] if len(sys.argv) > 1 else None
+
+    pattern = f"transcript:{session_filter}*" if session_filter else "transcript:*"
+
+    console.print(f"[bold]Loom Tail[/bold] — subscribing to [cyan]{pattern}[/cyan]")
+    console.print("[dim]Waiting for transcript events...[/dim]\n")
+
+    r = redis.from_url(REDIS_URL, decode_responses=True)
+    pubsub = r.pubsub()
+    pubsub.psubscribe(pattern)
+
+    try:
+        for message in pubsub.listen():
+            if message["type"] != "pmessage":
+                continue
+
+            try:
+                data = json.loads(message["data"])
+                formatted = format_message(data)
+                console.print(formatted)
+            except json.JSONDecodeError:
+                console.print(f"[red]Invalid JSON:[/red] {message['data'][:100]}")
+    except KeyboardInterrupt:
+        console.print("\n[dim]Goodbye.[/dim]")
+    finally:
+        pubsub.close()
+
+
+if __name__ == "__main__":
+    main()

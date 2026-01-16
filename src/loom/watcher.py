@@ -16,13 +16,27 @@ Lifecycle:
 import asyncio
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import redis.asyncio as aioredis
 from watchfiles import awatch, Change
 
 logger = logging.getLogger(__name__)
+
+# Redis connection
+REDIS_URL = os.getenv("REDIS_URL", "redis://alpha-pi:6379")
+_redis: aioredis.Redis | None = None
+
+
+async def get_redis() -> aioredis.Redis:
+    """Get or create async Redis connection."""
+    global _redis
+    if _redis is None:
+        _redis = await aioredis.from_url(REDIS_URL, decode_responses=True)
+    return _redis
 
 # Default idle timeout: 1 hour
 IDLE_TIMEOUT_SECONDS = 3600
@@ -177,12 +191,21 @@ async def run_watcher(
                             # Log the full JSON for detailed inspection
                             logger.debug(f"Transcript raw: {json.dumps(classified['raw'])}")
 
-                            # TODO: Publish to Redis pubsub
-                            # if redis_client:
-                            #     await redis_client.publish(
-                            #         f"transcript:{session_id}",
-                            #         json.dumps(classified['raw'])
-                            #     )
+                            # Publish to Redis pubsub
+                            try:
+                                r = await get_redis()
+                                channel = f"transcript:{session_id}"
+                                payload = json.dumps({
+                                    "session_id": session_id,
+                                    "type": classified["type"],
+                                    "role": classified["role"],
+                                    "content_types": classified["content_types"],
+                                    "raw": classified["raw"],
+                                })
+                                await r.publish(channel, payload)
+                                logger.debug(f"Published to {channel}")
+                            except Exception as e:
+                                logger.error(f"Redis publish error: {e}")
 
                 # Update position
                 file_pos = new_pos
