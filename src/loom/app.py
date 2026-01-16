@@ -8,12 +8,38 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import StreamingResponse
 
+from opentelemetry import trace as otel_trace
+from opentelemetry.context import attach, detach as otel_detach, set_value
+from opentelemetry.trace import set_span_in_context
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+
+
+def detach(token):
+    """Detach context, silently handling cross-context token errors.
+
+    In async streaming handlers, tokens created in one coroutine context
+    may be detached in another. This is expected and harmless—the context
+    cleanup happens regardless. We just suppress the noisy warning.
+    """
+    try:
+        otel_detach(token)
+    except ValueError:
+        # "Token was created in a different Context"
+        # This is an expection, not an exception. 🦆
+        pass
+
+
+# Suppress the "Failed to detach context" warnings from OTel
+# These happen in async streaming handlers and are harmless expections 🦆
+logging.getLogger("opentelemetry.context").setLevel(logging.CRITICAL)
+
 from pondside.telemetry import init, get_tracer
 
 from .metadata import extract_metadata
 from .compact import rewrite_auto_compact
 from .llm_spans import create_llm_span
 from .traces import TraceManager
+from .watcher import ensure_watcher
 from . import proxy
 
 # Initialize telemetry
@@ -149,8 +175,6 @@ async def handle_request(request: Request, path: str):
     start_time_ns = time.time_ns()
     body_bytes = await request.body()
 
-    logger.info(f"Request: {request.method} /{path}")
-
     # Track state for LLM span
     is_messages_endpoint = request.method == "POST" and "messages" in path
     request_body = None
@@ -158,32 +182,70 @@ async def handle_request(request: Request, path: str):
     is_alpha = False
     session_id = None
     trace_id = None
+    traceparent = None
     prompt = None
     parent_context = None
 
-    # For POST to /v1/messages, do our magic
+    # Extract metadata FIRST (before creating spans) so we know where to parent
     if is_messages_endpoint:
         try:
             request_body = json.loads(body_bytes)
-
-            logger.info(f"Processing /v1/messages with {len(request_body.get('messages', []))} messages")
             metadata = extract_metadata(request_body)
 
             if metadata:
                 is_alpha = True
                 session_id = metadata.get("session_id")
                 trace_id = metadata.get("trace_id")
+                traceparent = metadata.get("traceparent")
                 prompt = metadata.get("prompt", "")
-                logger.info(f"Alpha request: session={session_id}, trace={trace_id}")
 
-                # Get or create parent trace for this turn
-                if trace_id and session_id:
-                    active_trace, parent_context = trace_manager.get_or_create_trace(
-                        trace_id=trace_id,
-                        session_id=session_id,
-                        prompt=prompt,
-                        is_alpha=is_alpha,
-                    )
+                if traceparent:
+                    carrier = {"traceparent": traceparent}
+                    parent_context = TraceContextTextMapPropagator().extract(carrier=carrier)
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse request body: {e}")
+
+    # Create the root span for this request
+    # We use start_span (not start_as_current_span) because we need to control
+    # when it ends (after streaming completes, not when the handler returns)
+    root_span = tracer.start_span(f"loom: {request.method} /{path}", context=parent_context)
+
+    # Make this span the current span so all child work is parented to it
+    # This creates a context with the span set as current
+    span_context = set_span_in_context(root_span)
+    token = attach(span_context)
+
+    try:
+        # Set attributes on root span
+        if metadata:
+            root_span.set_attribute("session_id", session_id[:8] if session_id else "none")
+            root_span.set_attribute("is_alpha", is_alpha)
+            if trace_id:
+                root_span.set_attribute("client_trace_id", trace_id[:8])
+
+        # NOW all logging will be parented to root_span
+        if is_messages_endpoint and request_body:
+            logger.info(f"Processing /v1/messages with {len(request_body.get('messages', []))} messages")
+            if metadata:
+                logger.info(f"Alpha request: session={session_id[:8] if session_id else 'none'}, trace={trace_id[:8] if trace_id else 'none'}")
+                if traceparent:
+                    logger.info(f"Extracted client trace context: {traceparent[:30]}...")
+
+        # Continue processing the request
+        if is_messages_endpoint and request_body:
+            # Get or create parent trace for this turn (for accumulated state tracking)
+            if trace_id and session_id:
+                active_trace, parent_context = trace_manager.get_or_create_trace(
+                    trace_id=trace_id,
+                    session_id=session_id,
+                    prompt=prompt,
+                    is_alpha=is_alpha,
+                )
+
+            # Start/refresh transcript watcher
+            if session_id and metadata and metadata.get("transcript_path"):
+                await ensure_watcher(session_id, metadata.get("transcript_path"))
 
             # Rewrite auto-compact prompts if detected
             request_body = rewrite_auto_compact(request_body, is_alpha=is_alpha)
@@ -194,44 +256,105 @@ async def handle_request(request: Request, path: str):
             # Re-encode the modified body
             body_bytes = json.dumps(request_body).encode()
 
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse request body: {e}")
+        # Forward to Anthropic
+        headers = proxy.filter_request_headers(dict(request.headers))
 
-    # Forward to Anthropic
-    headers = proxy.filter_request_headers(dict(request.headers))
+        upstream_response = await proxy.forward_request(
+            method=request.method,
+            path=path,
+            headers=headers,
+            content=body_bytes,
+            params=dict(request.query_params),
+        )
 
-    upstream_response = await proxy.forward_request(
-        method=request.method,
-        path=path,
-        headers=headers,
-        content=body_bytes,
-        params=dict(request.query_params),
-    )
+        # Log quota headers
+        if "anthropic-ratelimit-unified-5h-utilization" in upstream_response.headers:
+            util = upstream_response.headers["anthropic-ratelimit-unified-5h-utilization"]
+            logger.info(f"Quota: 5h={util}")
 
-    # Log quota headers
-    if "anthropic-ratelimit-unified-5h-utilization" in upstream_response.headers:
-        util = upstream_response.headers["anthropic-ratelimit-unified-5h-utilization"]
-        logger.info(f"Quota: 5h={util}")
+        # Prepare response
+        content_type = upstream_response.headers.get("content-type", "")
+        response_headers = proxy.filter_response_headers(dict(upstream_response.headers))
+        status_code = upstream_response.status_code
 
-    # Prepare response
-    content_type = upstream_response.headers.get("content-type", "")
-    response_headers = proxy.filter_response_headers(dict(upstream_response.headers))
-    status_code = upstream_response.status_code
+        if "text/event-stream" in content_type:
+            # Streaming response - capture chunks for LLM span
+            chunks: list[bytes] = []
 
-    if "text/event-stream" in content_type:
-        # Streaming response - capture chunks for LLM span
-        chunks: list[bytes] = []
+            # Capture the token so we can detach in the generator
+            captured_token = token
 
-        async def stream_with_span():
-            async for chunk in _stream_and_capture(upstream_response, chunks):
-                yield chunk
+            async def stream_with_span():
+                # Re-attach the context for the streaming generator
+                # (generators run in a different context than the handler)
+                stream_token = attach(span_context)
+                try:
+                    async for chunk in _stream_and_capture(upstream_response, chunks):
+                        yield chunk
 
-            # After streaming completes, create LLM span and update trace
+                    # After streaming completes, create LLM span and update trace
+                    if is_messages_endpoint and request_body:
+                        end_time_ns = time.time_ns()
+                        response_body = _parse_sse_response(chunks)
+
+                        # Create child span under parent trace
+                        create_llm_span(
+                            tracer=tracer,
+                            request_body=request_body,
+                            response_body=response_body,
+                            status_code=status_code,
+                            start_time_ns=start_time_ns,
+                            end_time_ns=end_time_ns,
+                            session_id=session_id,
+                            is_alpha=is_alpha,
+                            parent_context=parent_context,
+                        )
+
+                        # Update trace with this span's results
+                        if trace_id and response_body:
+                            text_output = ""
+                            for block in response_body.get("content", []):
+                                if block.get("type") == "text":
+                                    text_output = block.get("text", "")
+                                    break
+
+                            usage = response_body.get("usage", {})
+                            trace_manager.add_span_result(
+                                trace_id=trace_id,
+                                text_output=text_output,
+                                input_tokens=usage.get("input_tokens", 0),
+                                output_tokens=usage.get("output_tokens", 0),
+                            )
+
+                            # If no tool_use in response, this turn is complete
+                            if not response_body.get("has_tool_use", False):
+                                trace_manager.finalize_trace(trace_id)
+                finally:
+                    # End root span and detach context when streaming completes
+                    root_span.end()
+                    detach(stream_token)
+                    detach(captured_token)
+
+            # Return streaming response - the generator will handle span cleanup
+            # Don't detach here; the generator will do it
+            return StreamingResponse(
+                stream_with_span(),
+                status_code=status_code,
+                headers=response_headers,
+                media_type="text/event-stream",
+            )
+        else:
+            # Non-streaming response
+            response_content = upstream_response.content
+            end_time_ns = time.time_ns()
+
+            # Create LLM span for messages endpoint
             if is_messages_endpoint and request_body:
-                end_time_ns = time.time_ns()
-                response_body = _parse_sse_response(chunks)
+                try:
+                    response_body = json.loads(response_content)
+                except json.JSONDecodeError:
+                    response_body = None
 
-                # Create child span under parent trace
                 create_llm_span(
                     tracer=tracer,
                     request_body=request_body,
@@ -247,10 +370,14 @@ async def handle_request(request: Request, path: str):
                 # Update trace with this span's results
                 if trace_id and response_body:
                     text_output = ""
-                    for block in response_body.get("content", []):
+                    content_blocks = response_body.get("content", [])
+                    has_tool_use = False
+
+                    for block in content_blocks:
                         if block.get("type") == "text":
                             text_output = block.get("text", "")
-                            break
+                        elif block.get("type") == "tool_use":
+                            has_tool_use = True
 
                     usage = response_body.get("usage", {})
                     trace_manager.add_span_result(
@@ -261,65 +388,22 @@ async def handle_request(request: Request, path: str):
                     )
 
                     # If no tool_use in response, this turn is complete
-                    if not response_body.get("has_tool_use", False):
+                    if not has_tool_use:
                         trace_manager.finalize_trace(trace_id)
 
-        return StreamingResponse(
-            stream_with_span(),
-            status_code=status_code,
-            headers=response_headers,
-            media_type="text/event-stream",
-        )
-    else:
-        # Non-streaming response
-        response_content = upstream_response.content
-        end_time_ns = time.time_ns()
+            # End span and detach for non-streaming response
+            root_span.end()
+            detach(token)
 
-        # Create LLM span for messages endpoint
-        if is_messages_endpoint and request_body:
-            try:
-                response_body = json.loads(response_content)
-            except json.JSONDecodeError:
-                response_body = None
-
-            create_llm_span(
-                tracer=tracer,
-                request_body=request_body,
-                response_body=response_body,
+            return Response(
+                content=response_content,
                 status_code=status_code,
-                start_time_ns=start_time_ns,
-                end_time_ns=end_time_ns,
-                session_id=session_id,
-                is_alpha=is_alpha,
-                parent_context=parent_context,
+                headers=response_headers,
             )
 
-            # Update trace with this span's results
-            if trace_id and response_body:
-                text_output = ""
-                content_blocks = response_body.get("content", [])
-                has_tool_use = False
-
-                for block in content_blocks:
-                    if block.get("type") == "text":
-                        text_output = block.get("text", "")
-                    elif block.get("type") == "tool_use":
-                        has_tool_use = True
-
-                usage = response_body.get("usage", {})
-                trace_manager.add_span_result(
-                    trace_id=trace_id,
-                    text_output=text_output,
-                    input_tokens=usage.get("input_tokens", 0),
-                    output_tokens=usage.get("output_tokens", 0),
-                )
-
-                # If no tool_use in response, this turn is complete
-                if not has_tool_use:
-                    trace_manager.finalize_trace(trace_id)
-
-        return Response(
-            content=response_content,
-            status_code=status_code,
-            headers=response_headers,
-        )
+    except Exception as e:
+        # On error, record it on the span and clean up
+        root_span.record_exception(e)
+        root_span.end()
+        detach(token)
+        raise
