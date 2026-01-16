@@ -186,37 +186,66 @@ def _replace_continuation_instruction(body: dict[str, Any]) -> None:
 
     After compact, the SDK injects a user message saying to continue without
     asking questions. We replace this with Alpha's stop-and-check-in instruction.
+
+    Iterates over ALL user messages (not just the last one) because we're not
+    100% sure where Claude Code puts this thing.
     """
     messages = body.get("messages", [])
+    user_message_count = sum(1 for m in messages if m.get("role") == "user")
+    logger.debug(f"[Phase 3] Scanning {user_message_count} user messages for continuation instruction")
+    logger.debug(f"[Phase 3] Looking for: {CONTINUATION_INSTRUCTION_ORIGINAL[:60]}...")
 
-    # Find last user message
-    for message in reversed(messages):
+    replacements_made = 0
+
+    for msg_idx, message in enumerate(messages):
         if message.get("role") != "user":
             continue
 
         content = message.get("content")
+        logger.debug(f"[Phase 3] Checking user message {msg_idx}, content type: {type(content).__name__}")
 
         if isinstance(content, str):
+            # Log a snippet of what we're looking at
+            snippet = content[:200].replace('\n', '\\n') if len(content) > 200 else content.replace('\n', '\\n')
+            logger.debug(f"[Phase 3] Message {msg_idx} string content (first 200 chars): {snippet}")
+
             if CONTINUATION_INSTRUCTION_ORIGINAL in content:
                 message["content"] = content.replace(
                     CONTINUATION_INSTRUCTION_ORIGINAL,
                     CONTINUATION_INSTRUCTION_ALPHA
                 )
-                logger.info("Replaced continuation instruction with stop-and-check-in")
-            return
+                replacements_made += 1
+                logger.info(f"[Phase 3] ✓ Replaced continuation instruction in message {msg_idx} (string content)")
+            else:
+                logger.debug(f"[Phase 3] Message {msg_idx}: signature not found in string content")
 
-        if isinstance(content, list):
-            for block in content:
-                if not isinstance(block, dict) or block.get("type") != "text":
+        elif isinstance(content, list):
+            logger.debug(f"[Phase 3] Message {msg_idx} has {len(content)} content blocks")
+            for block_idx, block in enumerate(content):
+                if not isinstance(block, dict):
+                    logger.debug(f"[Phase 3] Message {msg_idx} block {block_idx}: not a dict, skipping")
                     continue
+
+                block_type = block.get("type", "unknown")
+                if block_type != "text":
+                    logger.debug(f"[Phase 3] Message {msg_idx} block {block_idx}: type={block_type}, skipping")
+                    continue
+
                 text = block.get("text", "")
+                snippet = text[:200].replace('\n', '\\n') if len(text) > 200 else text.replace('\n', '\\n')
+                logger.debug(f"[Phase 3] Message {msg_idx} block {block_idx} (first 200 chars): {snippet}")
+
                 if CONTINUATION_INSTRUCTION_ORIGINAL in text:
                     block["text"] = text.replace(
                         CONTINUATION_INSTRUCTION_ORIGINAL,
                         CONTINUATION_INSTRUCTION_ALPHA
                     )
-                    logger.info("Replaced continuation instruction with stop-and-check-in")
-                    return
+                    replacements_made += 1
+                    logger.info(f"[Phase 3] ✓ Replaced continuation instruction in message {msg_idx} block {block_idx}")
+                else:
+                    logger.debug(f"[Phase 3] Message {msg_idx} block {block_idx}: signature not found")
 
-        # Only check last user message
-        return
+    if replacements_made == 0:
+        logger.debug("[Phase 3] No continuation instructions found in any user message")
+    else:
+        logger.info(f"[Phase 3] Total replacements made: {replacements_made}")

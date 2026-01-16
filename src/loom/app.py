@@ -40,6 +40,7 @@ from .compact import rewrite_auto_compact
 from .llm_spans import create_llm_span
 from .traces import TraceManager
 from .watcher import ensure_watcher
+from .quota import log_quota
 from . import proxy
 
 # Initialize telemetry
@@ -267,10 +268,8 @@ async def handle_request(request: Request, path: str):
             params=dict(request.query_params),
         )
 
-        # Log quota headers
-        if "anthropic-ratelimit-unified-5h-utilization" in upstream_response.headers:
-            util = upstream_response.headers["anthropic-ratelimit-unified-5h-utilization"]
-            logger.info(f"Quota: 5h={util}")
+        # Log quota headers to Redis (for dashboard)
+        log_quota(dict(upstream_response.headers))
 
         # Prepare response
         content_type = upstream_response.headers.get("content-type", "")
