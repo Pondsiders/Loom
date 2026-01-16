@@ -6,7 +6,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 # The canary that marks metadata blocks
-CANARY = "EAVESDROP_METADATA_BLOCK_UlVCQkVSRFVDSw"
+# UlVCQkVSRFVDSw is base64 for "RUBBERDUCK"
+CANARY = "LOOM_METADATA_UlVCQkVSRFVDSw"
 
 
 def extract_metadata(body: dict) -> dict | None:

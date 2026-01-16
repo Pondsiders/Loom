@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from pondside.telemetry import init, get_tracer
 
 from .metadata import extract_metadata
+from .compact import rewrite_auto_compact
 from .llm_spans import create_llm_span
 from .traces import TraceManager
 from . import proxy
@@ -183,6 +184,9 @@ async def handle_request(request: Request, path: str):
                         prompt=prompt,
                         is_alpha=is_alpha,
                     )
+
+            # Rewrite auto-compact prompts if detected
+            request_body = rewrite_auto_compact(request_body, is_alpha=is_alpha)
 
             # TODO: Compose system prompt from Redis
             # TODO: Inject memories from Cortex

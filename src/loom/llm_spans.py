@@ -115,7 +115,8 @@ def _add_input_messages(span: trace.Span, request_body: dict[str, Any]) -> None:
             # Extract just the text blocks, not tool results
             user_text = _extract_user_text_only(msg.get("content", ""))
             # Skip hook-injected content (system-reminders, canary blocks)
-            if user_text and not user_text.startswith("<system-reminder>") and "EAVESDROP_METADATA_BLOCK" not in user_text:
+            # Check both new and legacy canary strings
+            if user_text and not user_text.startswith("<system-reminder>") and "LOOM_METADATA" not in user_text and "EAVESDROP_METADATA_BLOCK" not in user_text:
                 last_real_user_content = user_text
 
             tool_results = _extract_tool_results(msg.get("content", []))

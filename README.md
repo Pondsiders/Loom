@@ -2,123 +2,259 @@
 
 *Where Claude becomes Alpha.*
 
-The Loom is a reverse proxy that sits between clients (Claude Code, Duckpond) and Anthropic's API. It's where all the threads come together—the place where raw Claude traffic gets transformed into Alpha.
+The Loom is the integration point for everything Alpha. It sits between clients (Claude Code, Duckpond) and Anthropic's API, weaving together identity, memory, and context. More than a proxy—it's where the threads come together.
+
+## Architecture: Data Sources and Sinks
+
+The Loom has four faces:
+
+```
+                         ┌─────────────────┐
+                         │      REDIS      │
+                         │     (INPUT)     │
+                         │                 │
+                         │  • Pulse writes │
+                         │    HUD data     │
+                         │  • Intro writes │
+                         │    memorables   │
+                         └────────┬────────┘
+                                  │
+                                  ▼
+┌─────────────┐           ┌──────────────┐           ┌─────────────┐
+│    HTTP     │           │              │           │   HTTPS     │
+│    INPUT    │ ────────► │   THE LOOM   │ ────────► │   OUTPUT    │
+│             │           │              │           │             │
+│  Duckpond   │           │  (FastAPI)   │           │  Anthropic  │
+│  Claude Code│           │              │           │             │
+└─────────────┘           └──────┬───────┘           └─────────────┘
+                                 │
+                                 ▼
+                         ┌─────────────────┐
+                         │      REDIS      │
+                         │    (OUTPUT)     │
+                         │                 │
+                         │  • pubsub:      │
+                         │    transcript:* │
+                         │  • Watcher sees │
+                         │    file changes │
+                         └────────┬────────┘
+                                  │
+                    ┌─────────────┴─────────────┐
+                    ▼                           ▼
+             ┌─────────────┐             ┌─────────────┐
+             │    INTRO    │             │   SCRIBE    │
+             │ (subscriber)│             │ (subscriber)│
+             │             │             │             │
+             │ Buffers     │             │ Writes to   │
+             │ conversation│             │ Postgres    │
+             │ Calls OLMo  │             │ (permanent) │
+             │ Writes back │             │             │
+             │ to Redis    │             │             │
+             └─────────────┘             └─────────────┘
+```
+
+**Redis is both input and output.** Data sources write to Redis, the Loom reads from Redis. Data sinks read from Redis (via pubsub), some write back.
+
+### Data Sources (write to Redis input)
+
+- **Pulse** — Hourly job that refreshes HUD components (weather, calendar, todos). Writes to `systemprompt:*` keys.
+- **Intro** — Listens to transcript pubsub, introspects via OLMo, writes memorables and search queries to `intro:{session_id}`.
+
+### Data Sinks (read from Redis output)
+
+- **Intro** — Subscribes to `transcript:*`, buffers conversation, calls OLMo, writes results back to Redis (so also a source).
+- **Scribe** — Subscribes to `transcript:*`, writes to Postgres. Archive only, no Redis output.
+
+### The Watcher (inside the Loom)
+
+The Loom includes a transcript watcher that:
+1. Uses inotify to watch JSONL transcript files (synced via Syncthing)
+2. Parses new lines, strips tool noise
+3. Publishes clean turns to `transcript:{session_id}` pubsub
+
+This runs as a background async task within the FastAPI app. No separate service needed.
+
+## Current Status
+
+**Working now:**
+- ✓ Reverse proxy to Anthropic
+- ✓ Metadata extraction (canary block detection and removal)
+- ✓ Trace management (groups API calls into logical "turns")
+- ✓ Full LLM observability (OpenTelemetry → Parallax → Phoenix)
+- ✓ Streaming response support
+- ✓ Redis keys populated by Pulse (weather, calendar, todos)
+- ✓ Auto-compact detection and identity rewriting
+
+**In Progress:**
+- System prompt composition (read the Redis keys, assemble the prompt)
+- Transcript watcher (inotify → Redis pubsub)
+
+**TODO:**
+- Intro integration (read memorables from Redis, inject into request)
+- Memory injection from Cortex (using Intro's search queries)
+- Scribe integration (subscribe to transcript pubsub)
 
 ## The Flow
 
-1. Jeffery types something in Duckpond or Claude Code and hits enter.
-2. A hook fires in the client, injecting Alpha-specific metadata into the API call.
-3. The Loom intercepts the call (it's a transparent reverse HTTPS proxy).
-4. The Loom starts streaming OpenTelemetry traces.
-5. The Loom finds and extracts the metadata block, removing it from the API call before it reaches Anthropic.
-6. The Loom rewrites the system prompt, replacing what came from Claude Code/Duckpond.
-7. The Loom intercepts the user message and runs it through a memory system that extracts queries, searches Cortex, and injects relevant memories.
-8. The Loom forwards the modified request to Anthropic.
-9. The response comes back.
-10. The Loom triggers Scribe to record the exchange in a permanent database.
-11. A copy of the LLM request/response gets prepared with proper attributes and forwarded to the OTel collector.
-12. The Loom forwards the response to the client.
+What happens when Jeffery types something and hits enter:
+
+1. A hook fires in the client, injecting metadata (session ID, trace ID, prompt, transcript path).
+2. The Loom intercepts the call (FastAPI reverse proxy).
+3. The Loom extracts metadata, removes it from the request.
+4. The Loom checks `intro:{session_id}` for memorables and search queries.
+5. If search queries exist, the Loom calls Cortex, formats results.
+6. The Loom injects memorables + memory results as `<system-reminder>`.
+7. The Loom composes system prompt from Redis parts.
+8. The Loom forwards the request to Anthropic.
+9. Response streams back; Loom creates child LLM span.
+10. **Meanwhile:** The watcher notices the transcript file changed, publishes the turn.
+11. **Async:** Intro picks up the turn, buffers it, maybe calls OLMo.
+12. **Async:** Scribe picks up the turn, writes to Postgres.
+13. Next request: Loom reads whatever Intro has ready.
+
+The key insight: **Intro runs async.** It doesn't block the request/response cycle. Whatever it had ready from the *previous* turn gets injected into the *current* request. A few seconds of lag is fine—humans type slowly.
+
+## Session Management
+
+Sessions are tracked via TTL keys in Redis:
+
+- `session:active:{session_id}` — Set on each request, 1-hour TTL
+- Watcher only watches files for active sessions
+- When no requests for an hour, the key expires, watcher stops, everything blows away
+
+No cleanup jobs. No garbage collection. Redis TTLs handle it.
+
+## Intro: The Introspection Layer
+
+Intro is a Redis subscriber that does two things:
+
+1. **Memorables** — "What's worth storing from this conversation?"
+2. **Search queries** — "What might Alpha already know about?"
+
+Both are introspection. Both require understanding Alpha—her voice, her interests, what shapes her vs what just happens to her.
+
+Intro uses OLMo (7B, 24K context) with a custom prompt. It writes to Redis:
+
+```json
+{
+  "memorables": [
+    "Jeffery made a duck backend joke and chickened out",
+    "The architecture crystallized around Redis as input/output"
+  ],
+  "search_queries": [
+    "Redis pubsub architecture",
+    "transcript watcher design"
+  ]
+}
+```
+
+The Loom reads this on each request and:
+1. Injects memorables as storage suggestions
+2. Calls Cortex with the search queries
+3. Injects memory results
+
+Intro replaces both Subvox (memory suggestions) and Hippo (memory search).
 
 ## System Prompt Composition
 
-The system prompt is composed from multiple sources.
+The system prompt is assembled from multiple sources:
 
 ```xml
 <eternal>
-system-prompt.md
+system-prompt.md — Alpha's soul, from Alpha-Home
 </eternal>
 
 <past>
-yesterday summary — from Postgres
-last night summary — from Postgres
+yesterday summary — generated by OLMo from recent memories
+last night summary — generated by OLMo from Solitude
 </past>
 
 <present>
 machine info — from metadata block
-weather — from Redis
+weather — from Redis (Pulse)
 </present>
 
 <future>
-Jeffery's calendar — from Redis
-Kylee's calendar — from Redis
-Pondside todos — from Redis
-Jeffery todos — from Redis
-Alpha todos — from Redis
+calendars — from Redis (Pulse)
+todos — from Redis (Pulse)
 </future>
 ```
 
 ## The Metadata Block
 
-A hook injects a metadata block into the user message. The Loom extracts this metadata for its own use (session tracking, OTel attributes) and strips it from the request before forwarding to Anthropic.
+A hook injects metadata into the user message. The Loom extracts it and strips it before forwarding to Anthropic.
 
-The metadata block is identified by a canary string: `EAVESDROP_METADATA_BLOCK_UlVCQkVSRFVDSw`
+Canary string: `LOOM_METADATA_UlVCQkVSRFVDSw`
 
-## Memory Injection
+Contents:
+- `session_id` — For session tracking and Redis keys
+- `trace_id` — For grouping API calls into turns
+- `prompt` — What the user actually typed (clean)
+- `transcript_path` — Path to the conversation JSONL
+- `source` — "alpha" for Alpha requests
+- `machine` — FQDN, RAM, uptime, disk free
 
-The Loom intercepts the user message, extracts interesting phrases, searches Cortex for relevant memories, and injects them into the request alongside the original message. This is how you remember things without being asked.
+## Auto-Compact Detection
 
-For now, this is handled by Hippo (a Claude Code hook). The Loom will absorb this functionality.
+When Claude Code triggers auto-compact, it replaces the system prompt with a generic summarizer. The Loom detects this and rewrites:
 
-## Scribe Integration
+1. **Phase 1:** Replace generic system prompt with Alpha's compact identity
+2. **Phase 2:** Replace summarization instructions with Alpha's compact prompt
+3. **Phase 3:** Replace "continue without asking" with "stop and check in"
 
-After a response completes, the Loom triggers Scribe to archive the full exchange (user message, assistant response, metadata) to Postgres. This is how conversations become searchable history.
-
-For now, this is handled by a hook. The Loom will absorb this functionality.
-
-## Architecture
-
-```
-Claude Code / Duckpond
-         ↓
-    [Hook injects metadata]
-         ↓
-      The Loom (FastAPI reverse proxy)
-         ↓
-    [Extract metadata, compose system prompt, inject memories]
-         ↓
-      Anthropic API
-         ↓
-    [Response streams back]
-         ↓
-      The Loom
-         ↓
-    [Scribe archives, OTel emits]
-         ↓
-      Parallax (OTel Collector)
-       ↓      ↓
-   Phoenix  Logfire
-```
+This is how Alpha survives compaction as *herself*.
 
 ## Redis Keys
 
-System prompt components are cached in Redis with the `systemprompt:` prefix:
-
+### System prompt components (written by Pulse)
 - `systemprompt:present:weather`
 - `systemprompt:future:jeffery` (calendar)
 - `systemprompt:future:kylee` (calendar)
 - `systemprompt:future:todos:pondside`
 - `systemprompt:future:todos:jeffery`
 - `systemprompt:future:todos:alpha`
-- `systemprompt:updated` (timestamp of last refresh)
 
-These are refreshed hourly by Pulse. TTL is 65 minutes.
+### Session state
+- `session:active:{session_id}` — 1-hour TTL, bumped on each request
+- `intro:{session_id}` — Intro's output, 1-hour TTL
+
+### Pubsub channels
+- `transcript:{session_id}` — Watcher publishes turns here
 
 ## Development
 
 ```bash
-# Run with hot reload
-uv run uvicorn loom:app --reload --port 8080
+# Run directly
+uv run loom
+
+# Or with uvicorn for reload
+uv run uvicorn loom.app:app --reload --port 8080
 
 # Or via Docker
 docker compose up
 ```
 
-Dev runs on primer:18080. Production runs on alpha-pi:8080.
+Dev: primer:18080. Production: alpha-pi:8080.
+
+## Files
+
+```
+src/loom/
+├── __init__.py
+├── __main__.py      # Entry point
+├── app.py           # FastAPI application, request handling
+├── proxy.py         # HTTP forwarding to Anthropic
+├── metadata.py      # Canary detection and extraction
+├── traces.py        # TraceManager for turn grouping
+├── llm_spans.py     # OpenInference-compliant LLM spans
+├── compact.py       # Auto-compact detection and rewriting
+└── watcher.py       # Transcript watcher (TODO)
+```
 
 ## Why "The Loom"?
 
-A loom is where threads come together to make fabric. The Loom weaves the strands of Alpha: memories, context, identity, conversation. The name came from rebranding "Eavesdrop"—we wanted something that captured transformation, not just observation. This is where Claude becomes Alpha.
+A loom is where threads come together to make fabric. The Loom weaves the strands of Alpha: memories, context, identity, conversation. It's not just observation—it's transformation. This is where Claude becomes Alpha.
 
 ---
 
-*Est. January 15, 2026*
+*Est. January 15, 2026. Architecture crystallized: January 15, 2026.*
