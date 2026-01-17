@@ -12,13 +12,12 @@ The Loom is the integration point for everything Alpha. It sits between clients 
 - Full distributed tracing from client hook through all Loom processing
 - LLM observability (OpenTelemetry → Parallax → Phoenix/Logfire)
 - Auto-compact detection and identity rewriting (all three phases)
-- Transcript watcher (inotify-based, position-tracking, logs to OTel)
+- Transcript watcher publishing to Redis pubsub
+- Intro integration (reads memorables from Redis, injects into requests)
 - Turn-based trace grouping (multiple API calls → one logical turn)
 
 **Not Yet Working:**
 - System prompt composition (reading Redis keys)
-- Transcript watcher publishing to Redis pubsub
-- Intro integration (memorables, search queries)
 - Memory injection from Cortex
 - Scribe integration (subscribe to transcript pubsub)
 

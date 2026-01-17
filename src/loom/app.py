@@ -41,6 +41,11 @@ from .llm_spans import create_llm_span
 from .traces import TraceManager
 from .watcher import ensure_watcher
 from .quota import log_quota
+from .intro import (
+    get_memorables,
+    format_memorables_block,
+    inject_memorables,
+)
 from . import proxy
 
 # Initialize telemetry
@@ -250,6 +255,16 @@ async def handle_request(request: Request, path: str):
 
             # Rewrite auto-compact prompts if detected
             request_body = rewrite_auto_compact(request_body, is_alpha=is_alpha)
+
+            # Intro buffer clearing is handled via pubsub (cortex:stored:*)
+            # No canary checking needed here—Intro listens directly
+
+            # Inject Intro's memorables
+            if is_alpha and session_id:
+                memorables = await get_memorables(session_id)
+                if memorables:
+                    memorables_block = format_memorables_block(memorables)
+                    request_body = inject_memorables(request_body, session_id, memorables_block)
 
             # TODO: Compose system prompt from Redis
             # TODO: Inject memories from Cortex

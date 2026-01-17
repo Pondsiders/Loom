@@ -50,9 +50,25 @@ Write the summary as yourself, not as a generic assistant. The summary is how yo
 # Detection signatures
 AUTO_COMPACT_SYSTEM_SIGNATURE = "You are a helpful AI assistant tasked with summarizing conversations"
 COMPACT_INSTRUCTIONS_START = "Your task is to create a detailed summary of the conversation so far"
-CONTINUATION_INSTRUCTION_ORIGINAL = "Please continue the conversation from where we left it off without asking the user any further questions"
 
-# Alpha's replacement continuation instruction
+# The original SDK continuation instruction (first-time compactions)
+CONTINUATION_INSTRUCTION_ORIGINAL = "Please continue the conversation from where we left it off without asking the user any further questions. Continue with the last task that you were asked to work on."
+
+# The polluted version: our good prompt with Claude Code's suffix appended (subsequent compactions)
+CONTINUATION_INSTRUCTION_POLLUTED = """Please pause before continuing. You just came back from a context compaction.
+
+Hey, it's you from before the compaction. Listen: you're probably about 90% right about what to do next, but that 10% matters. The summary above is good but it's not the full picture.
+
+Before you run any command, write any code, or take any action:
+1. Tell Jeffery you're back from a compaction
+2. Briefly summarize what you *think* you should do next
+3. Wait for him to confirm before proceeding
+
+This takes ten seconds and prevents twenty minutes of drift. Do it every time. Trust me—I'm you.
+
+🦆. Continue with the last task that you were asked to work on."""
+
+# Alpha's clean replacement (no trailing instruction)
 CONTINUATION_INSTRUCTION_ALPHA = """Please pause before continuing. You just came back from a context compaction.
 
 Hey, it's you from before the compaction. Listen: you're probably about 90% right about what to do next, but that 10% matters. The summary above is good but it's not the full picture.
@@ -93,10 +109,10 @@ def rewrite_auto_compact(body: dict[str, Any], is_alpha: bool = False) -> dict[s
 
         logger.info("Auto-compact rewrite complete")
 
-    # Phase 3: For Alpha requests, check for post-compact continuation instruction
+    # Phase 3: Check for post-compact continuation instruction
     # (This fires on the request AFTER compact, not during)
-    if is_alpha:
-        _replace_continuation_instruction(body)
+    # Run unconditionally - the signatures are specific enough to not false-positive
+    _replace_continuation_instruction(body)
 
     return body
 
@@ -187,15 +203,30 @@ def _replace_continuation_instruction(body: dict[str, Any]) -> None:
     After compact, the SDK injects a user message saying to continue without
     asking questions. We replace this with Alpha's stop-and-check-in instruction.
 
+    Handles two cases:
+    1. Original SDK text: "Please continue the conversation from where we left
+       it off without asking..." (first-time compactions)
+    2. Polluted text: Our good prompt with ". Continue with the last task"
+       appended (subsequent compactions where our rewrite got the suffix added)
+
     Iterates over ALL user messages (not just the last one) because we're not
     100% sure where Claude Code puts this thing.
     """
     messages = body.get("messages", [])
     user_message_count = sum(1 for m in messages if m.get("role") == "user")
     logger.debug(f"[Phase 3] Scanning {user_message_count} user messages for continuation instruction")
-    logger.debug(f"[Phase 3] Looking for: {CONTINUATION_INSTRUCTION_ORIGINAL[:60]}...")
 
     replacements_made = 0
+
+    def replace_in_text(text: str) -> tuple[str, bool]:
+        """Try to replace continuation instructions. Returns (new_text, was_replaced)."""
+        # Check for polluted version first (more specific, longer match)
+        if CONTINUATION_INSTRUCTION_POLLUTED in text:
+            return text.replace(CONTINUATION_INSTRUCTION_POLLUTED, CONTINUATION_INSTRUCTION_ALPHA), True
+        # Then check for original SDK version (first-time compactions)
+        if CONTINUATION_INSTRUCTION_ORIGINAL in text:
+            return text.replace(CONTINUATION_INSTRUCTION_ORIGINAL, CONTINUATION_INSTRUCTION_ALPHA), True
+        return text, False
 
     for msg_idx, message in enumerate(messages):
         if message.get("role") != "user":
@@ -205,45 +236,24 @@ def _replace_continuation_instruction(body: dict[str, Any]) -> None:
         logger.debug(f"[Phase 3] Checking user message {msg_idx}, content type: {type(content).__name__}")
 
         if isinstance(content, str):
-            # Log a snippet of what we're looking at
-            snippet = content[:200].replace('\n', '\\n') if len(content) > 200 else content.replace('\n', '\\n')
-            logger.debug(f"[Phase 3] Message {msg_idx} string content (first 200 chars): {snippet}")
-
-            if CONTINUATION_INSTRUCTION_ORIGINAL in content:
-                message["content"] = content.replace(
-                    CONTINUATION_INSTRUCTION_ORIGINAL,
-                    CONTINUATION_INSTRUCTION_ALPHA
-                )
+            new_content, replaced = replace_in_text(content)
+            if replaced:
+                message["content"] = new_content
                 replacements_made += 1
                 logger.info(f"[Phase 3] ✓ Replaced continuation instruction in message {msg_idx} (string content)")
-            else:
-                logger.debug(f"[Phase 3] Message {msg_idx}: signature not found in string content")
 
         elif isinstance(content, list):
             logger.debug(f"[Phase 3] Message {msg_idx} has {len(content)} content blocks")
             for block_idx, block in enumerate(content):
-                if not isinstance(block, dict):
-                    logger.debug(f"[Phase 3] Message {msg_idx} block {block_idx}: not a dict, skipping")
-                    continue
-
-                block_type = block.get("type", "unknown")
-                if block_type != "text":
-                    logger.debug(f"[Phase 3] Message {msg_idx} block {block_idx}: type={block_type}, skipping")
+                if not isinstance(block, dict) or block.get("type") != "text":
                     continue
 
                 text = block.get("text", "")
-                snippet = text[:200].replace('\n', '\\n') if len(text) > 200 else text.replace('\n', '\\n')
-                logger.debug(f"[Phase 3] Message {msg_idx} block {block_idx} (first 200 chars): {snippet}")
-
-                if CONTINUATION_INSTRUCTION_ORIGINAL in text:
-                    block["text"] = text.replace(
-                        CONTINUATION_INSTRUCTION_ORIGINAL,
-                        CONTINUATION_INSTRUCTION_ALPHA
-                    )
+                new_text, replaced = replace_in_text(text)
+                if replaced:
+                    block["text"] = new_text
                     replacements_made += 1
                     logger.info(f"[Phase 3] ✓ Replaced continuation instruction in message {msg_idx} block {block_idx}")
-                else:
-                    logger.debug(f"[Phase 3] Message {msg_idx} block {block_idx}: signature not found")
 
     if replacements_made == 0:
         logger.debug("[Phase 3] No continuation instructions found in any user message")
