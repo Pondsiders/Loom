@@ -103,23 +103,44 @@ def inject_memorables(request_body: dict, session_id: str, memorables_block: str
     if not messages:
         return request_body
 
-    # Find the last user message
+    # Find the last user message that contains actual human text (not just tool results)
     for i in range(len(messages) - 1, -1, -1):
         if messages[i].get("role") == "user":
             content = messages[i].get("content", [])
 
-            # If content is a string, convert to list format
+            # If content is a string, it's definitely human text
             if isinstance(content, str):
                 content = [{"type": "text", "text": content}]
+                # Append the memorables block
+                content.append({
+                    "type": "text",
+                    "text": memorables_block,
+                })
+                messages[i]["content"] = content
+                logger.info(f"Injected memorables into user message for session {session_id[:8]}")
+                break
 
-            # Append the memorables block as a new text content block
-            content.append({
-                "type": "text",
-                "text": memorables_block,
-            })
+            # If content is a list, check if it has any text blocks (not just tool_results)
+            if isinstance(content, list):
+                # A message with human text will have at least one "text" type block
+                # A tool-result-only message will only have "tool_result" type blocks
+                has_human_text = any(
+                    isinstance(block, dict) and block.get("type") == "text"
+                    for block in content
+                )
 
-            messages[i]["content"] = content
-            logger.info(f"Injected memorables into user message for session {session_id[:8]}")
-            break
+                # Only inject if there's actual human text in this message
+                if has_human_text:
+                    content.append({
+                        "type": "text",
+                        "text": memorables_block,
+                    })
+                    messages[i]["content"] = content
+                    logger.info(f"Injected memorables into user message for session {session_id[:8]}")
+                    break
+                else:
+                    # This is a tool-result-only message, skip it
+                    logger.debug(f"Skipping tool-result-only user message")
+                    continue
 
     return request_body
