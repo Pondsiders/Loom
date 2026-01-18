@@ -4,6 +4,7 @@ import json
 import logging
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import StreamingResponse
@@ -253,8 +254,11 @@ async def handle_request(request: Request, path: str):
                 )
 
             # Start/refresh transcript watcher
-            if session_id and metadata and metadata.get("transcript_path"):
-                await ensure_watcher(session_id, metadata.get("transcript_path"))
+            # Build path locally rather than trusting metadata (which has source machine's absolute path)
+            if session_id:
+                transcript_path = Path.home() / ".claude" / "projects" / "-Pondside" / f"{session_id}.jsonl"
+                if transcript_path.exists():
+                    await ensure_watcher(session_id, str(transcript_path))
 
             # Rewrite auto-compact prompts if detected
             request_body = rewrite_auto_compact(request_body, is_alpha=is_alpha)

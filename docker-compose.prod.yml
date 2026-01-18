@@ -1,0 +1,22 @@
+# The Loom - Production Configuration (alpha-pi)
+
+services:
+  loom:
+    build: .
+    ports:
+      - "8080:8080"  # Production port
+    volumes:
+      - /Pondside/Alpha-Home:/Pondside/Alpha-Home:ro  # System prompt fallback
+      # Mount host's synced .claude to container's $HOME/.claude (container runs as root)
+      - /home/alpha/.claude:/root/.claude:ro  # Transcript files
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT}
+      - OTEL_SERVICE_NAME=loom
+      - REDIS_URL=${REDIS_URL}
+      - DATABASE_URL=${DATABASE_URL}
+    restart: unless-stopped
+    dns:
+      - ${TAILSCALE_DNS:-100.100.100.100}
+      - ${PUBLIC_DNS:-1.1.1.1}
+    dns_search:
+      - ${TAILSCALE_SEARCH:-tail8bd569.ts.net}

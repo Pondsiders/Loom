@@ -14,6 +14,7 @@ services:
       - ./src/loom:/app/src/loom:ro  # Hot reload Loom code
       - ./prompts:/app/prompts:ro    # Hot reload prompts
       - /home/jefferyharrell/.claude:/home/jefferyharrell/.claude:ro  # Transcript files
+      - /Pondside/Alpha-Home:/Pondside/Alpha-Home:ro  # System prompt fallback
     environment:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://alpha-pi:4318
       - OTEL_SERVICE_NAME=loom-dev
