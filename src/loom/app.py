@@ -47,7 +47,6 @@ from .intro import (
     inject_memorables,
 )
 from .prompt import init_eternal_prompt, inject_system_prompt
-from .hippo import wait_for_memories, inject_hippo_memories
 from . import proxy
 
 # Initialize telemetry
@@ -274,13 +273,6 @@ async def handle_request(request: Request, path: str):
             if is_alpha:
                 machine_name = metadata.get("machine", {}).get("fqdn", "").split(".")[0] if metadata else None
                 request_body = inject_system_prompt(request_body, machine_name=machine_name)
-
-            # Wait for Hippo memories from Intro (BLPOP with timeout)
-            # This is the last injection step - we wait here for Intro to finish
-            if is_alpha and trace_id:
-                hippo_memories = await wait_for_memories(trace_id)
-                if hippo_memories:
-                    request_body = inject_hippo_memories(request_body, hippo_memories)
 
             # Re-encode the modified body
             body_bytes = json.dumps(request_body).encode()
