@@ -46,6 +46,8 @@ from .intro import (
     format_memorables_block,
     inject_memorables,
 )
+from .prompt import init_eternal_prompt, inject_system_prompt
+from .hippo import wait_for_memories, inject_hippo_memories
 from . import proxy
 
 # Initialize telemetry
@@ -58,6 +60,8 @@ trace_manager = TraceManager(tracer)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle."""
+    # Initialize eternal prompt at startup (fetches from GitHub or disk)
+    init_eternal_prompt()
     yield
     await proxy.close()
 
@@ -266,8 +270,17 @@ async def handle_request(request: Request, path: str):
                     memorables_block = format_memorables_block(memorables)
                     request_body = inject_memorables(request_body, session_id, memorables_block)
 
-            # TODO: Compose system prompt from Redis
-            # TODO: Inject memories from Cortex
+            # Inject assembled system prompt (eternal + past/present/future from Redis)
+            if is_alpha:
+                machine_name = metadata.get("machine", {}).get("fqdn", "").split(".")[0] if metadata else None
+                request_body = inject_system_prompt(request_body, machine_name=machine_name)
+
+            # Wait for Hippo memories from Intro (BLPOP with timeout)
+            # This is the last injection step - we wait here for Intro to finish
+            if is_alpha and trace_id:
+                hippo_memories = await wait_for_memories(trace_id)
+                if hippo_memories:
+                    request_body = inject_hippo_memories(request_body, hippo_memories)
 
             # Re-encode the modified body
             body_bytes = json.dumps(request_body).encode()

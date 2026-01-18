@@ -27,3 +27,4 @@ uv.lock
 
 # Docker
 .docker/
+.DS_Store

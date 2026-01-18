@@ -75,11 +75,11 @@ def format_memorables_block(memorables: list[str]) -> str:
     if not cleaned:
         return ""
 
-    lines = ["Intro surfaced these moments. Store what lands, let the rest go:"]
+    lines = ["Alpha, this is your inner voice. Store these now:"]
     for mem in cleaned:
         lines.append(f"- {mem}")
 
-    return "<subvox>\n" + "\n".join(lines) + "\n</subvox>"
+    return "<intro>\n" + "\n".join(lines) + "\n</intro>"
 
 
 def inject_memorables(request_body: dict, session_id: str, memorables_block: str) -> dict:
