@@ -38,8 +38,8 @@ async def get_redis() -> aioredis.Redis:
         _redis = await aioredis.from_url(REDIS_URL, decode_responses=True)
     return _redis
 
-# Default idle timeout: 1 hour
-IDLE_TIMEOUT_SECONDS = 3600
+# Default idle timeout: 60 seconds for testing (normally 1 hour)
+IDLE_TIMEOUT_SECONDS = 60
 
 
 @dataclass
@@ -158,7 +158,8 @@ async def run_watcher(
     logger.info(f"Watcher starting: session={session_id[:8]}, path={path.name}, pos={file_pos}")
 
     try:
-        async for changes in awatch(path, stop_event=cancel_event):
+        # Use polling instead of inotify - inotify doesn't work reliably across Docker volume mounts
+        async for changes in awatch(path, stop_event=cancel_event, poll_delay_ms=100):
             # Check idle timeout
             if session_id in _watchers:
                 state = _watchers[session_id]
@@ -237,7 +238,7 @@ async def ensure_watcher(session_id: str, transcript_path: str) -> None:
     if session_id in _watchers:
         # Already watching - just reset the timer
         _watchers[session_id].last_activity = now
-        logger.debug(f"Watcher refreshed: session={session_id[:8]}")
+        logger.info(f"Watcher refreshed: session={session_id[:8]}")
         return
 
     # Start a new watcher

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -52,6 +53,9 @@ from . import proxy
 
 # Initialize telemetry
 init("loom")
+
+# Claude data directory - override in Docker where Path.home() != host home
+CLAUDE_DATA_DIR = Path(os.getenv("CLAUDE_DATA_DIR", str(Path.home() / ".claude")))
 logger = logging.getLogger(__name__)
 tracer = get_tracer()
 trace_manager = TraceManager(tracer)
@@ -195,12 +199,30 @@ async def handle_request(request: Request, path: str):
     traceparent = None
     prompt = None
     parent_context = None
+    model_short = "n/a"
+    model_name = "unknown"
 
-    # Extract metadata FIRST (before creating spans) so we know where to parent
+    # Phase 1: Parse body and extract metadata WITHOUT LOGGING
+    # We need model name for span naming and traceparent for context propagation
+    # before we create the root span
     if is_messages_endpoint:
         try:
             request_body = json.loads(body_bytes)
-            metadata = extract_metadata(request_body)
+            model_name = request_body.get("model", "unknown")
+
+            # Shorten model name for readability
+            if "opus" in model_name.lower():
+                model_short = "opus"
+            elif "sonnet" in model_name.lower():
+                model_short = "sonnet"
+            elif "haiku" in model_name.lower():
+                model_short = "haiku"
+            else:
+                model_short = model_name.split("-")[0] if "-" in model_name else model_name
+
+            # Extract metadata WITHOUT logging (we're before span context is attached)
+            # Logging happens in Phase 3 after we have proper context
+            metadata = extract_metadata(request_body, log=False)
 
             if metadata:
                 is_alpha = True
@@ -209,38 +231,45 @@ async def handle_request(request: Request, path: str):
                 traceparent = metadata.get("traceparent")
                 prompt = metadata.get("prompt", "")
 
+                # Get parent context from client traceparent
                 if traceparent:
                     carrier = {"traceparent": traceparent}
                     parent_context = TraceContextTextMapPropagator().extract(carrier=carrier)
 
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse request body: {e}")
+        except json.JSONDecodeError:
+            model_short = "error"
 
-    # Create the root span for this request
-    # We use start_span (not start_as_current_span) because we need to control
-    # when it ends (after streaming completes, not when the handler returns)
-    root_span = tracer.start_span(f"loom: {request.method} /{path}", context=parent_context)
+    # Phase 2: Create root span with good name, using client context if available
+    # For Alpha requests: parent to the client's trace (UserPromptSubmit hook)
+    # For SDK requests: create a new root trace with model name for filtering
+    if is_alpha:
+        span_name = f"loom: POST /v1/messages ({model_short}, alpha)"
+    elif is_messages_endpoint:
+        span_name = f"loom: POST /v1/messages ({model_short})"
+    else:
+        span_name = f"loom: {request.method} /{path}"
+
+    root_span = tracer.start_span(span_name, context=parent_context)
 
     # Make this span the current span so all child work is parented to it
-    # This creates a context with the span set as current
     span_context = set_span_in_context(root_span)
     token = attach(span_context)
 
     try:
-        # Set attributes on root span
-        if metadata:
-            root_span.set_attribute("session_id", session_id[:8] if session_id else "none")
-            root_span.set_attribute("is_alpha", is_alpha)
-            if trace_id:
-                root_span.set_attribute("client_trace_id", trace_id[:8])
+        # Phase 3: Set attributes and log (now safely parented)
+        root_span.set_attribute("model", model_name)
+        root_span.set_attribute("is_alpha", is_alpha)
+        if session_id:
+            root_span.set_attribute("session_id", session_id[:8])
+        if trace_id:
+            root_span.set_attribute("client_trace_id", trace_id[:8])
 
-        # NOW all logging will be parented to root_span
         if is_messages_endpoint and request_body:
-            logger.info(f"Processing /v1/messages with {len(request_body.get('messages', []))} messages")
+            msg_count = len(request_body.get('messages', []))
             if metadata:
-                logger.info(f"Alpha request: session={session_id[:8] if session_id else 'none'}, trace={trace_id[:8] if trace_id else 'none'}")
-                if traceparent:
-                    logger.info(f"Extracted client trace context: {traceparent[:30]}...")
+                logger.info(f"Alpha request ({model_short}): {msg_count} messages, session={session_id[:8] if session_id else 'none'}")
+            else:
+                logger.info(f"SDK request ({model_short}): {msg_count} messages")
 
         # Continue processing the request
         if is_messages_endpoint and request_body:
@@ -256,7 +285,8 @@ async def handle_request(request: Request, path: str):
             # Start/refresh transcript watcher
             # Build path locally rather than trusting metadata (which has source machine's absolute path)
             if session_id:
-                transcript_path = Path.home() / ".claude" / "projects" / "-Pondside" / f"{session_id}.jsonl"
+                transcript_path = CLAUDE_DATA_DIR / "projects" / "-Pondside" / f"{session_id}.jsonl"
+                logger.info(f"Watcher check: session={session_id[:8]}, path={transcript_path}, exists={transcript_path.exists()}")
                 if transcript_path.exists():
                     await ensure_watcher(session_id, str(transcript_path))
 

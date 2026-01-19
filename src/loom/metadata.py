@@ -10,11 +10,15 @@ logger = logging.getLogger(__name__)
 CANARY = "LOOM_METADATA_UlVCQkVSRFVDSw"
 
 
-def extract_metadata(body: dict) -> dict | None:
+def extract_metadata(body: dict, log: bool = True) -> dict | None:
     """Find and remove the metadata block from the request.
 
     Returns the extracted metadata, or None if not found.
     Modifies body in place to remove the canary block.
+
+    Args:
+        body: The request body dict (modified in place)
+        log: Whether to emit log lines (set False when calling before span context is attached)
     """
     messages = body.get("messages", [])
 
@@ -44,7 +48,8 @@ def extract_metadata(body: dict) -> dict | None:
 
             # Found it! Pop the block
             content.pop(block_idx)
-            logger.info(f"Removed canary block {block_idx} from message {msg_idx}")
+            if log:
+                logger.info(f"Removed metadata block {block_idx} from message {msg_idx}")
 
             # Extract JSON: everything between first { and last }
             try:
@@ -52,10 +57,12 @@ def extract_metadata(body: dict) -> dict | None:
                 end = text.rindex("}") + 1
                 json_str = text[start:end]
                 metadata = json.loads(json_str)
-                logger.info(f"Extracted metadata: session={metadata.get('session_id', '?')}")
+                if log:
+                    logger.info(f"Extracted metadata: session={metadata.get('session_id', '?')[:8]}")
                 return metadata
             except (ValueError, json.JSONDecodeError) as e:
-                logger.error(f"Failed to parse metadata JSON: {e}")
+                if log:
+                    logger.error(f"Failed to parse metadata JSON: {e}")
                 return None
 
     return None

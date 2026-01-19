@@ -19,5 +19,6 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://alpha-pi:4318
       - OTEL_SERVICE_NAME=loom-dev
       - REDIS_URL=redis://alpha-pi:6379
+      - CLAUDE_DATA_DIR=/home/jefferyharrell/.claude
     command: ["uvicorn", "loom.app:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
     restart: unless-stopped
