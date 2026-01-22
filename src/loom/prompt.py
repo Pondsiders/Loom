@@ -227,7 +227,7 @@ def get_capsule_summaries() -> tuple[CapsuleSummary | None, CapsuleSummary | Non
 def get_hud_data() -> dict[str, str | None]:
     """Fetch HUD data from Redis.
 
-    Returns dict with keys: weather, calendar, todos
+    Returns dict with keys: weather, calendar, todos, today_so_far
     """
     try:
         r = _get_redis()
@@ -235,10 +235,11 @@ def get_hud_data() -> dict[str, str | None]:
             "weather": _get_redis_value(r, "hud:weather"),
             "calendar": _get_redis_value(r, "hud:calendar"),
             "todos": _get_redis_value(r, "hud:todos"),
+            "today_so_far": _get_redis_value(r, "systemprompt:past:today"),
         }
     except Exception as e:
         logger.warning(f"Error fetching HUD data: {e}")
-        return {"weather": None, "calendar": None, "todos": None}
+        return {"weather": None, "calendar": None, "todos": None, "today_so_far": None}
 
 
 # === Template Rendering ===
@@ -271,6 +272,7 @@ def build_system_prompt(machine_name: str | None = None) -> str:
         weather=hud["weather"],
         calendar=hud["calendar"],
         todos=hud["todos"],
+        today_so_far=hud["today_so_far"],
     )
 
 
