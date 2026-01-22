@@ -39,7 +39,8 @@ from pondside.telemetry import init, get_tracer
 
 from .metadata import extract_metadata
 from .compact import rewrite_auto_compact
-from .llm_spans import create_llm_span
+# LLM span creation moved to Argonath - import kept for reference
+# from .llm_spans import create_llm_span
 from .traces import TraceManager
 from .watcher import ensure_watcher
 from .quota import log_quota
@@ -220,21 +221,41 @@ async def handle_request(request: Request, path: str):
             else:
                 model_short = model_name.split("-")[0] if "-" in model_name else model_name
 
-            # Extract metadata WITHOUT logging (we're before span context is attached)
-            # Logging happens in Phase 3 after we have proper context
-            metadata = extract_metadata(request_body, log=False)
+            # Extract metadata from headers FIRST (via Deliverator), then fall back to body
+            # Headers contain the CURRENT turn's traceparent; body may have stale ones
+            # from previous turns in the conversation history
+            header_session = request.headers.get("x-session-id")
+            header_traceparent = request.headers.get("traceparent")
 
-            if metadata:
+            if header_session:
+                # Headers found (via Deliverator) - use these, they're fresh
                 is_alpha = True
-                session_id = metadata.get("session_id")
-                trace_id = metadata.get("trace_id")
-                traceparent = metadata.get("traceparent")
-                prompt = metadata.get("prompt", "")
+                session_id = header_session
+                traceparent = header_traceparent
+                # trace_id can be extracted from traceparent: 00-{trace_id}-{span_id}-{flags}
+                if header_traceparent:
+                    parts = header_traceparent.split("-")
+                    if len(parts) >= 2:
+                        trace_id = parts[1]
+                # Still extract body metadata for other fields (prompt, machine info)
+                # but don't use its traceparent
+                metadata = extract_metadata(request_body, log=False)
+                if metadata:
+                    prompt = metadata.get("prompt", "")
+            else:
+                # No headers - check body (direct to Loom, not via Deliverator)
+                metadata = extract_metadata(request_body, log=False)
+                if metadata:
+                    is_alpha = True
+                    session_id = metadata.get("session_id")
+                    trace_id = metadata.get("trace_id")
+                    traceparent = metadata.get("traceparent")
+                    prompt = metadata.get("prompt", "")
 
-                # Get parent context from client traceparent
-                if traceparent:
-                    carrier = {"traceparent": traceparent}
-                    parent_context = TraceContextTextMapPropagator().extract(carrier=carrier)
+            # Get parent context from traceparent (from body or headers)
+            if traceparent:
+                carrier = {"traceparent": traceparent}
+                parent_context = TraceContextTextMapPropagator().extract(carrier=carrier)
 
         except json.JSONDecodeError:
             model_short = "error"
@@ -311,8 +332,17 @@ async def handle_request(request: Request, path: str):
             # Re-encode the modified body
             body_bytes = json.dumps(request_body).encode()
 
-        # Forward to Anthropic
+        # Forward to Anthropic (or Argonath)
         headers = proxy.filter_request_headers(dict(request.headers))
+
+        # Inject current span context into headers for trace propagation
+        # This updates traceparent to point to the Loom's span, so downstream
+        # services (like Argonath) create child spans under us, not siblings
+        TraceContextTextMapPropagator().inject(headers)
+
+        # Also forward session_id for correlation (Argonath uses this)
+        if session_id:
+            headers["x-session-id"] = session_id
 
         upstream_response = await proxy.forward_request(
             method=request.method,
@@ -345,23 +375,11 @@ async def handle_request(request: Request, path: str):
                     async for chunk in _stream_and_capture(upstream_response, chunks):
                         yield chunk
 
-                    # After streaming completes, create LLM span and update trace
+                    # After streaming completes, update trace
+                    # NOTE: LLM span creation moved to Argonath (observability proxy)
                     if is_messages_endpoint and request_body:
                         end_time_ns = time.time_ns()
                         response_body = _parse_sse_response(chunks)
-
-                        # Create child span under parent trace
-                        create_llm_span(
-                            tracer=tracer,
-                            request_body=request_body,
-                            response_body=response_body,
-                            status_code=status_code,
-                            start_time_ns=start_time_ns,
-                            end_time_ns=end_time_ns,
-                            session_id=session_id,
-                            is_alpha=is_alpha,
-                            parent_context=parent_context,
-                        )
 
                         # Update trace with this span's results
                         if trace_id and response_body:
@@ -401,24 +419,13 @@ async def handle_request(request: Request, path: str):
             response_content = upstream_response.content
             end_time_ns = time.time_ns()
 
-            # Create LLM span for messages endpoint
+            # NOTE: LLM span creation moved to Argonath (observability proxy)
+            # Parse response for trace management
             if is_messages_endpoint and request_body:
                 try:
                     response_body = json.loads(response_content)
                 except json.JSONDecodeError:
                     response_body = None
-
-                create_llm_span(
-                    tracer=tracer,
-                    request_body=request_body,
-                    response_body=response_body,
-                    status_code=status_code,
-                    start_time_ns=start_time_ns,
-                    end_time_ns=end_time_ns,
-                    session_id=session_id,
-                    is_alpha=is_alpha,
-                    parent_context=parent_context,
-                )
 
                 # Update trace with this span's results
                 if trace_id and response_body:

@@ -74,7 +74,7 @@ class TraceManager:
         # Set attributes on parent span
         parent_span.set_attribute("openinference.span.kind", "CHAIN")
         parent_span.set_attribute("session.id", session_id)
-        parent_span.set_attribute("input.value", prompt[:2000])
+        # parent_span.set_attribute("input.value", prompt[:2000])
         parent_span.set_attribute("input.mime_type", "text/plain")
 
         if is_alpha:

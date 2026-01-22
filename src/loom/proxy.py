@@ -1,10 +1,15 @@
-"""HTTP proxy logic for forwarding requests to Anthropic."""
+"""HTTP proxy logic for forwarding requests to Anthropic (or Argonath)."""
+
+import os
 
 import httpx
 
+# Where we forward to - Argonath in the full pipeline, or direct to Anthropic
+UPSTREAM_URL = os.environ.get("UPSTREAM_URL", "https://api.anthropic.com")
+
 # Persistent client for connection pooling
 client = httpx.AsyncClient(
-    base_url="https://api.anthropic.com",
+    base_url=UPSTREAM_URL,
     timeout=httpx.Timeout(300.0, connect=10.0),  # Long timeout for LLM responses
 )
 
