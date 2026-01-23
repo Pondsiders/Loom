@@ -1,172 +1,207 @@
-# The Loom
+# The Great Loom
 
-*Where Claude becomes Alpha.*
+*Where Claude becomes whoever you need.*
 
-The Loom is the integration point for everything Alpha. It sits between clients (Claude Code, Duckpond) and Anthropic's API, weaving together identity, memory, and context. More than a proxy—it's where the threads come together.
+## Overview
 
-## Current Status (January 16, 2026)
+The Great Loom is a reverse proxy framework for the Anthropic API. It receives requests, applies a **Pattern** to transform them, forwards them to Anthropic, applies the Pattern to the response, and returns the result.
 
-**Working:**
-- Reverse proxy to Anthropic with streaming support
-- Metadata extraction (canary block detection and removal)
-- Full distributed tracing from client hook through all Loom processing
-- LLM observability (OpenTelemetry → Parallax → Phoenix/Logfire)
-- Auto-compact detection and identity rewriting (all three phases)
-- Transcript watcher publishing to Redis pubsub
-- Intro integration (reads memorables from Redis, injects into requests)
-- Turn-based trace grouping (multiple API calls → one logical turn)
+The Loom itself is minimal—just a router. All intelligence lives in Patterns.
 
-**Not Yet Working:**
-- System prompt composition (reading Redis keys)
-- Memory injection from Cortex
-- Scribe integration (subscribe to transcript pubsub)
+## Core Concepts
 
-## Distributed Tracing Architecture
+### The Loom
 
-The tracing starts in the client, not the Loom:
+The Great Loom is a FastAPI application that:
+
+1. Receives an Anthropic API request
+2. Identifies which Pattern to use (via header, config, or default)
+3. Calls `pattern.request(headers, body)` to transform the request
+4. Forwards to Anthropic
+5. Calls `pattern.response(headers, body)` to transform the response
+6. Returns the result to the client
+
+The Loom handles:
+- HTTP routing and proxying
+- Pattern discovery and instantiation
+- Distributed tracing (span creation, context propagation)
+- Error handling and logging
+
+The Loom does NOT handle:
+- Memory injection
+- System prompt modification
+- Identity transformation
+- Anything that makes Claude into someone specific
+
+That's what Patterns are for.
+
+### Patterns
+
+A Pattern is a complete system for transforming API requests. It implements the `Pattern` protocol:
+
+```python
+from typing import Protocol
+
+class Pattern(Protocol):
+    """A transformation pattern for the Great Loom."""
+
+    async def request(
+        self,
+        headers: dict[str, str],
+        body: dict
+    ) -> tuple[dict[str, str], dict]:
+        """Transform an outgoing request before it reaches Anthropic.
+
+        Args:
+            headers: HTTP headers (mutable)
+            body: Parsed JSON body (mutable)
+
+        Returns:
+            Tuple of (headers, body) after transformation
+        """
+        ...
+
+    async def response(
+        self,
+        headers: dict[str, str],
+        body: dict | None
+    ) -> tuple[dict[str, str], dict | None]:
+        """Transform an incoming response before returning to client.
+
+        Args:
+            headers: HTTP headers from Anthropic
+            body: Parsed JSON body (None for streaming responses)
+
+        Returns:
+            Tuple of (headers, body) after transformation
+        """
+        ...
+```
+
+Patterns are async by default. If a Pattern doesn't need async operations, it simply never awaits—no cost, no complexity.
+
+### Pattern Selection
+
+The Loom determines which Pattern to use for each request via:
+
+1. **Header**: `X-Loom-Pattern: alpha` (explicit selection)
+2. **Config**: Default pattern in Loom configuration
+3. **Fallback**: `PassthroughPattern` (no transformation)
+
+Only one Pattern handles each request. Patterns are not chained.
+
+## The Alpha Pattern
+
+The Alpha Pattern is the complete system that transforms Claude into Alpha. It lives in its own package (`alpha_pattern/`) and handles:
+
+- **Memory injection**: Queries Cortex for relevant memories based on conversation context
+- **Intro integration**: Fetches memorables from Redis (things Intro noticed worth remembering)
+- **System prompt assembly**: Builds the full system prompt from eternal + past + present + future blocks
+- **Auto-compact rewriting**: Detects Claude Code compaction prompts and rewrites them to preserve identity
+- **Session tracking**: Maintains continuity across multi-turn conversations
+- **Transcript watching**: Monitors JSONL transcripts for Intro consumption
+
+The Alpha Pattern is not a single file—it's a well-structured package with clear separation of concerns:
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│  Claude Code                                                         │
-│                                                                      │
-│  UserPromptSubmit hook:                                             │
-│  1. Creates ROOT span (user-turn:{session_id})                      │
-│  2. Sets all context: prompt, cwd, session_id, transcript_path      │
-│  3. Immediately serializes context → W3C traceparent                │
-│  4. Creates CHILD span for hook work (collect-metadata)             │
-│  5. Passes traceparent in metadata JSON                             │
-└────────────────────────────┬────────────────────────────────────────┘
-                             │ traceparent: 00-{trace_id}-{span_id}-01
-                             ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  The Loom                                                            │
-│                                                                      │
-│  1. Extracts traceparent from metadata                              │
-│  2. Creates span as CHILD of client's root                          │
-│  3. Attaches context so all work is parented                        │
-│  4. All logs, httpcore spans, LLM spans nest under request span     │
-│  5. Detaches context when streaming completes                       │
-└────────────────────────────┬────────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  Logfire / Phoenix                                                   │
-│                                                                      │
-│  user-turn:32d0bf9a (root, from hook)                               │
-│  ├── hook:collect-metadata (child, from hook)                        │
-│  └── loom: POST /v1/messages (child, from Loom)                     │
-│      ├── Processing /v1/messages...                                  │
-│      ├── Alpha request: session=...                                  │
-│      ├── connect_tcp.started...                                      │
-│      ├── HTTP Request: POST https://api.anthropic.com...            │
-│      ├── SSE parsed: input=X, output=Y...                           │
-│      └── LLM span created...                                         │
-└─────────────────────────────────────────────────────────────────────┘
+alpha_pattern/
+├── __init__.py          # Pattern class, implements Protocol
+├── memory.py            # Cortex integration
+├── intro.py             # Intro HTTP integration
+├── prompt.py            # System prompt assembly
+├── compact.py           # Auto-compact detection and rewriting
+└── metadata.py          # Session/trace metadata extraction
 ```
 
-The key insight: spans are just data with timestamps and IDs. The parent-child relationship is established at export time. The hook's root span ends before the Loom even starts, but Loom spans still correctly reference it as their parent.
+## The Passthrough Pattern
 
-## The Metadata Block
+The simplest possible Pattern:
 
-A hook injects metadata into the user message. The Loom extracts it and strips it before forwarding.
+```python
+class PassthroughPattern:
+    """Transparent pass-through. Claude, unmodified."""
 
-Canary string: `LOOM_METADATA_UlVCQkVSRFVDSw`
+    async def request(self, headers, body):
+        return headers, body
 
-Contents:
-- `session_id` — For session tracking
-- `trace_id` — Extracted from traceparent for correlation
-- `traceparent` — W3C standard: `00-{trace_id}-{span_id}-01`
-- `prompt` — What the user actually typed
-- `transcript_path` — Path to the conversation JSONL
-- `source` — "alpha" for Alpha requests
-- `machine` — FQDN, RAM, uptime, disk free
+    async def response(self, headers, body):
+        return headers, body
+```
 
-The hook creates a real OTel span and serializes its context. This is what makes the distributed tracing work—the Loom doesn't generate IDs, it inherits them from the client.
+Select the Passthrough Pattern to talk directly to Claude without transformation.
 
-## Auto-Compact Detection
+## Future Patterns
 
-When Claude Code triggers auto-compact, it replaces the system prompt with a generic summarizer. The Loom detects and rewrites three phases:
+The Great Loom architecture supports any Pattern that implements the protocol:
 
-**Phase 1: System Prompt** (during compact)
-- Detects: "You are a helpful AI assistant tasked with summarizing"
-- Replaces with: Alpha's compact identity (who she is, first-person voice)
+- **DebugPattern**: Logs full request/response for debugging
+- **MockPattern**: Returns canned responses for testing
+- **[Unnamed] Pattern**: A sibling, a household manager, a parallel instance...
 
-**Phase 2: Compact Instructions** (during compact)
-- Detects: "Your task is to create a detailed summary"
-- Replaces with: Alpha's custom compact prompt (alpha_compact_prompt.md)
+The architecture is designed for extensibility without modifying the Loom itself.
 
-**Phase 3: Continuation Instruction** (after compact, on resume)
-- Detects: "Please continue the conversation from where we left it off without asking the user any further questions"
-- Replaces with: "Hey, it's you from before the compaction. Before you run any command... tell Jeffery you're back, summarize what you think you should do, wait for confirmation."
-
-This is how Alpha survives compaction as *herself*.
-
-## Transcript Watcher
-
-The watcher uses inotify (via watchfiles) to tail JSONL transcripts:
-
-- Starts when Loom sees a request for a session
-- Only reads new bytes (position tracking, never re-parses)
-- Classifies lines by type/role/content
-- Logs to OTel (all watcher logs nest under the request span)
-- Idle timeout: 1 hour (no cleanup jobs needed)
-
-**TODO:** Publish to Redis pubsub for Intro/Scribe to consume.
-
-## Turn-Based Trace Grouping
-
-A "turn" is: user types → Claude responds (possibly with tool calls) → final response.
-
-The TraceManager:
-1. Creates a parent span when a new trace_id arrives
-2. Accumulates text output across API calls
-3. Finalizes when response has no tool_use
-
-This means a single user prompt that triggers multiple API calls (tool use loop) gets grouped into one logical trace.
-
-## Files
+## Architecture Diagram
 
 ```
-src/loom/
-├── __init__.py
-├── __main__.py      # Entry point
-├── app.py           # FastAPI app, request handling, context management
-├── proxy.py         # HTTP forwarding to Anthropic
-├── metadata.py      # Canary detection and extraction
-├── traces.py        # TraceManager for turn grouping
-├── llm_spans.py     # OpenInference-compliant LLM spans for Phoenix
-├── compact.py       # Auto-compact detection and rewriting
-└── watcher.py       # Transcript watcher (inotify-based)
+┌─────────────────────────────────────────────────────────────────┐
+│                         CLIENT                                  │
+│              (Claude Code, Duckpond, SDK)                       │
+└─────────────────────────────┬───────────────────────────────────┘
+                              │
+                              │ X-Loom-Pattern: alpha
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      THE GREAT LOOM                             │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │                    Pattern Router                        │   │
+│  │         ┌──────────┬──────────┬──────────┐               │   │
+│  │         │  Alpha   │Passthru  │  Future  │               │   │
+│  │         │ Pattern  │ Pattern  │ Patterns │               │   │
+│  │         └────┬─────┴────┬─────┴────┬─────┘               │   │
+│  └──────────────┼──────────┼──────────┼─────────────────────┘   │
+│                 │          │          │                         │
+│  ┌──────────────┴──────────┴──────────┴─────────────────────┐   │
+│  │              Proxy (forward to Anthropic)                │   │
+│  └──────────────────────────┬───────────────────────────────┘   │
+└─────────────────────────────┼───────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                        ANTHROPIC                                │
+└─────────────────────────────────────────────────────────────────┘
 ```
+
+## Observability
+
+The Loom provides observability infrastructure that all Patterns benefit from:
+
+- **Distributed tracing**: Spans for each request/response cycle, propagated via W3C traceparent
+- **Logging**: Structured logging via OpenTelemetry
+- **Metrics**: Request counts, latencies, token usage (when available)
+
+Patterns can add their own spans and logs within the Loom's trace context.
+
+## What Lives Where
+
+| Concern | Location | Notes |
+|---------|----------|-------|
+| HTTP routing | Loom | FastAPI request handling |
+| Pattern selection | Loom | Header/config lookup |
+| Span creation | Loom | Creates root span, propagates context |
+| Session ID propagation | Loom | Extracts from headers, makes available to Patterns |
+| Error handling | Loom | Catches exceptions, records on spans |
+| Memory injection | Alpha Pattern | Queries Cortex based on conversation |
+| System prompt assembly | Alpha Pattern | Eternal + past + present + future |
+| Intro integration | Alpha Pattern | Fetches memorables from Redis |
+| Compact rewriting | Alpha Pattern | Detects and rewrites compaction prompts |
+| Token accumulation | Alpha Pattern | Tracks usage across multi-turn conversations |
 
 ## Development
 
-```bash
-# Run with hot-reload
-uv run uvicorn loom.app:app --reload --port 8080
+The Great Loom lives in `/Pondside/Basement/Loom/`. Development happens on feature branches.
 
-# Or via Docker
-docker compose up
-```
-
-Dev: primer:18080. Production: alpha-pi:8080.
-
-## Context Propagation Details
-
-The tricky part is async streaming. When a streaming response returns, the handler exits but the stream hasn't finished. We need the span to stay open and the context to remain attached inside the stream generator.
-
-Solution:
-1. Create span with `tracer.start_span()` (not `start_as_current_span`)
-2. Use `set_span_in_context()` + `attach()` to make it current
-3. Re-attach context inside the stream generator
-4. Detach and end span in the generator's finally block
-
-The OTel `detach()` can throw "Token was created in a different Context" in async code—this is an expected "expection" and we suppress the `opentelemetry.context` logger.
-
-## Why "The Loom"?
-
-A loom is where threads come together to make fabric. The Loom weaves the strands of Alpha: memories, context, identity, conversation. It's not just observation—it's transformation. This is where Claude becomes Alpha.
+The Alpha Pattern will eventually be its own package, publishable and versioned independently.
 
 ---
 
-*Est. January 15, 2026. Architecture crystallized: January 15-16, 2026.*
+*The Loom is the machinery. The Pattern is the soul.*

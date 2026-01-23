@@ -1,4 +1,4 @@
-"""HTTP proxy logic for forwarding requests to Anthropic (or Argonath)."""
+"""HTTP proxy logic for forwarding requests to upstream (Argonath or Anthropic)."""
 
 import os
 
@@ -8,10 +8,26 @@ import httpx
 UPSTREAM_URL = os.environ.get("UPSTREAM_URL", "https://api.anthropic.com")
 
 # Persistent client for connection pooling
-client = httpx.AsyncClient(
-    base_url=UPSTREAM_URL,
-    timeout=httpx.Timeout(300.0, connect=10.0),  # Long timeout for LLM responses
-)
+_client: httpx.AsyncClient | None = None
+
+
+async def get_client() -> httpx.AsyncClient:
+    """Get or create the HTTP client."""
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(
+            base_url=UPSTREAM_URL,
+            timeout=httpx.Timeout(300.0, connect=10.0),  # Long timeout for LLM responses
+        )
+    return _client
+
+
+async def close():
+    """Close the HTTP client."""
+    global _client
+    if _client:
+        await _client.aclose()
+        _client = None
 
 
 async def forward_request(
@@ -21,7 +37,8 @@ async def forward_request(
     content: bytes,
     params: dict,
 ) -> httpx.Response:
-    """Forward a request to Anthropic."""
+    """Forward a request to upstream."""
+    client = await get_client()
     return await client.request(
         method=method,
         url=f"/{path}",
@@ -29,12 +46,6 @@ async def forward_request(
         content=content,
         params=params,
     )
-
-
-async def stream_response(response: httpx.Response):
-    """Yield chunks from the upstream response."""
-    async for chunk in response.aiter_bytes():
-        yield chunk
 
 
 def filter_request_headers(headers: dict) -> dict:
@@ -51,8 +62,3 @@ def filter_response_headers(headers: dict) -> dict:
         k: v for k, v in headers.items()
         if k.lower() not in ("content-encoding", "content-length", "transfer-encoding")
     }
-
-
-async def close():
-    """Close the HTTP client."""
-    await client.aclose()
