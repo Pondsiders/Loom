@@ -7,6 +7,9 @@ services:
       - "18080:8080"  # The Great Loom (dev) on port 18080
     environment:
       - UPSTREAM_URL=http://primer:8082  # Argonath
+      - IOTA_CWD=/Iota
+    volumes:
+      - /Iota:/Iota:ro  # Iota's working directory (read-only)
     restart: unless-stopped
     dns:
       - ${TAILSCALE_DNS}
