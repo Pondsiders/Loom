@@ -4,6 +4,8 @@
 # dependencies = [
 #     "claude-agent-sdk>=0.1.19",
 #     "redis",
+#     "langsmith[claude-agent-sdk,otel]",
+#     "logfire",
 # ]
 # ///
 """
@@ -27,8 +29,24 @@ import asyncio
 import os
 import sys
 
+# Enable Langsmith OTel tracing (routes to Logfire instead of Langsmith)
+os.environ['LANGSMITH_OTEL_ENABLED'] = 'true'
+os.environ['LANGSMITH_OTEL_ONLY'] = 'true'
+os.environ['LANGSMITH_TRACING'] = 'true'
+
+import logfire
 import redis
 from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions, AssistantMessage, TextBlock, ResultMessage
+from langsmith.integrations.claude_agent_sdk import configure_claude_agent_sdk
+
+# Configure Logfire
+# Scrubbing disabled because it's too aggressive (scrubs "session", "auth", etc.)
+# Our logs are authenticated with 30-day retention—acceptable risk for debugging visibility
+logfire.configure(
+    service_name="iota",
+    scrubbing=False,
+)
+configure_claude_agent_sdk()
 
 
 IOTA_CWD = "/Iota"
