@@ -1,10 +1,11 @@
 """The Alpha Package - everything that makes Alpha who she is.
 
 This package contains all the modules that transform Claude into Alpha:
-- soul: The eternal prompt (loaded from git at startup)
+- soul: The eternal prompts (loaded from git at startup)
 - hud: Dynamic context from Redis (weather, calendar, todos)
 - capsule: Past summaries from Postgres
 - intro: Inner voice memorables injection
+- compact: Auto-compact detection and rewriting
 
 The AlphaPattern class composes these modules into a complete
 request transformation.
@@ -13,11 +14,11 @@ request transformation.
 import asyncio
 import logging
 
-from . import soul, hud, capsule, intro
+from . import soul, hud, capsule, intro, compact
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["AlphaPattern", "soul", "hud", "capsule", "intro"]
+__all__ = ["AlphaPattern", "soul", "hud", "capsule", "intro", "compact"]
 
 
 class AlphaPattern:
@@ -36,7 +37,7 @@ class AlphaPattern:
 
     def __init__(self):
         # Initialize soul at pattern creation time
-        if soul._eternal_prompt is None:
+        if soul._soul_prompt is None:
             soul.init()
 
     async def request(
@@ -44,7 +45,14 @@ class AlphaPattern:
         headers: dict[str, str],
         body: dict,
     ) -> tuple[dict[str, str], dict]:
-        """Inject Alpha's assembled system prompt into the request."""
+        """Inject Alpha's assembled system prompt into the request.
+
+        Also handles auto-compact detection and rewriting.
+        """
+
+        # === Phase 0: Check for auto-compact and rewrite if needed ===
+        # This must happen FIRST, before we inject the normal system prompt
+        body = compact.rewrite_auto_compact(body)
 
         # Get context from headers
         machine_name = headers.get("x-machine-name", "unknown")
@@ -61,7 +69,7 @@ class AlphaPattern:
         system_blocks = []
 
         # ETERNAL - my soul
-        eternal_text = f"<eternal>\n{soul.get()}\n</eternal>"
+        eternal_text = f"<eternal>\n{soul.get_soul()}\n</eternal>"
         system_blocks.append({"type": "text", "text": eternal_text})
 
         # PAST - capsule summaries + today
