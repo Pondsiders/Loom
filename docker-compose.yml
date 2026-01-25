@@ -6,8 +6,10 @@ services:
     ports:
       - "18080:8080"  # The Great Loom (dev) on port 18080
     environment:
-      - UPSTREAM_URL=http://primer:8082  # Argonath
+      - UPSTREAM_URL=http://primer:8083  # Argonath-greatloom
       - IOTA_CWD=/Iota
+      - LOGFIRE_TOKEN=${LOGFIRE_TOKEN}
+      - OTEL_SERVICE_NAME=loom-greatloom
     volumes:
       - /Iota:/Iota:ro  # Iota's working directory (read-only)
     restart: unless-stopped
