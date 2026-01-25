@@ -6,7 +6,7 @@ from typing import Any
 from .protocol import Pattern
 from .patterns import PassthroughPattern
 from .patterns.iota import IotaPattern
-from .patterns.alpha import AlphaPattern
+from .alpha import AlphaPattern
 
 logger = logging.getLogger(__name__)
 
