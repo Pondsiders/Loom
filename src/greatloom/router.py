@@ -6,6 +6,7 @@ from typing import Any
 from .protocol import Pattern
 from .patterns import PassthroughPattern
 from .patterns.iota import IotaPattern
+from .patterns.alpha import AlphaPattern
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ def init_patterns() -> None:
     """Initialize built-in patterns. Call at startup."""
     register_pattern("passthrough", PassthroughPattern())
     register_pattern("iota", IotaPattern())
+    register_pattern("alpha", AlphaPattern())
     logger.info(f"Pattern router initialized with {len(_patterns)} patterns")
 
 
