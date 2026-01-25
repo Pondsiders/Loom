@@ -14,11 +14,11 @@ request transformation.
 import asyncio
 import logging
 
-from . import soul, hud, capsule, intro, compact
+from . import soul, hud, capsule, intro, compact, memories
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["AlphaPattern", "soul", "hud", "capsule", "intro", "compact"]
+__all__ = ["AlphaPattern", "soul", "hud", "capsule", "intro", "compact", "memories"]
 
 
 class AlphaPattern:
@@ -44,10 +44,14 @@ class AlphaPattern:
         self,
         headers: dict[str, str],
         body: dict,
+        metadata: dict | None = None,
     ) -> tuple[dict[str, str], dict]:
         """Inject Alpha's assembled system prompt into the request.
 
-        Also handles auto-compact detection and rewriting.
+        Also handles:
+        - Auto-compact detection and rewriting
+        - Memory injection from metadata (surfaced by prompt)
+        - Intro memorables injection (surfaced by conversation)
         """
 
         # === Phase 0: Check for auto-compact and rewrite if needed ===
@@ -139,6 +143,12 @@ class AlphaPattern:
         if memorables:
             block = intro.format_block(memorables)
             intro.inject_into_messages(body, session_id, block)
+
+        # === Inject memories from metadata (if present) ===
+        # Memories come from Cortex via the hook, surfaced by the user's prompt
+        # They appear AFTER the user message for attention recency
+        if metadata:
+            memories.inject_memories(body, metadata)
 
         logger.info(f"Injected Alpha system prompt ({len(system_blocks)} blocks)")
         return headers, body

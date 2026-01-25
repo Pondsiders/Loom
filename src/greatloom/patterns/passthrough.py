@@ -16,6 +16,7 @@ class PassthroughPattern:
         self,
         headers: dict[str, str],
         body: dict,
+        metadata: dict | None = None,
     ) -> tuple[dict[str, str], dict]:
         """Pass through unchanged."""
         return headers, body

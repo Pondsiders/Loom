@@ -16,12 +16,14 @@ class Pattern(Protocol):
         self,
         headers: dict[str, str],
         body: dict,
+        metadata: dict | None = None,
     ) -> tuple[dict[str, str], dict]:
         """Transform an outgoing request before it reaches Anthropic.
 
         Args:
             headers: HTTP headers (mutable)
             body: Parsed JSON body (mutable)
+            metadata: Extracted metadata from the request (memories, etc.)
 
         Returns:
             Tuple of (headers, body) after transformation

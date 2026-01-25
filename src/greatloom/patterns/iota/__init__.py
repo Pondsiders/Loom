@@ -91,6 +91,7 @@ class IotaPattern:
         self,
         headers: dict[str, str],
         body: dict,
+        metadata: dict | None = None,
     ) -> tuple[dict[str, str], dict]:
         """Inject Iota's system prompts into the request.
 

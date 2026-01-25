@@ -13,6 +13,7 @@ import logfire
 from opentelemetry import trace
 
 from .router import init_patterns, get_pattern_from_request
+from .metadata import extract_and_strip_metadata
 from . import proxy
 
 # Suppress harmless OTel context warnings before they're configured
@@ -97,9 +98,15 @@ async def handle_request(request: Request, path: str):
     )
 
     try:
-        # Transform request
+        # Extract and strip metadata from body
+        # Metadata contains memories, session info, etc. from the hook
+        metadata = None
         if body is not None:
-            headers, body = await pattern.request(headers, body)
+            metadata, body = extract_and_strip_metadata(body)
+
+        # Transform request (pass metadata to pattern)
+        if body is not None:
+            headers, body = await pattern.request(headers, body, metadata)
             body_bytes = json.dumps(body).encode()
 
         # Forward to upstream
