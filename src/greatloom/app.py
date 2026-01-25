@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import StreamingResponse
 import logfire
-from opentelemetry.propagate import extract
+from opentelemetry import trace
 
 from .router import init_patterns, get_pattern_from_request
 from . import proxy
@@ -42,7 +42,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Instrument FastAPI
+# Instrument FastAPI - this will automatically extract traceparent from headers
+# The Deliverator (upstream) promotes body metadata to headers before forwarding
 logfire.instrument_fastapi(app)
 
 
@@ -58,12 +59,6 @@ async def handle_request(request: Request, path: str):
 
     body_bytes = await request.body()
     headers = dict(request.headers)
-
-    # Extract distributed tracing context from incoming request
-    traceparent = headers.get("traceparent")
-    parent_ctx = None
-    if traceparent:
-        parent_ctx = extract({"traceparent": traceparent})
 
     # Parse body for pattern selection and transformation
     body = None
@@ -83,26 +78,15 @@ async def handle_request(request: Request, path: str):
     model = body.get("model", "unknown") if body else "unknown"
     session_id = headers.get("x-session-id", "")
 
-    # Attach parent context if available
-    if parent_ctx:
-        ctx_manager = logfire.attach_context(parent_ctx)
-        ctx_manager.__enter__()
-    else:
-        ctx_manager = None
-
-    # Create span for this request
-    span_name = f"loom: {request.method} /{path}"
-    if is_messages_endpoint and model != "unknown":
-        span_name = f"loom: POST /v1/messages ({model}, {pattern_name.lower().replace('pattern', '')})"
-
-    span = logfire.span(
-        span_name,
-        pattern=pattern_name,
-        model=model,
-        session_id=session_id[:8] if session_id else None,
-        endpoint=f"/{path}",
-    )
-    span.__enter__()
+    # === Get the current span (created by instrument_fastapi) and attach attributes ===
+    # No manual span creation - we enrich the existing FastAPI span
+    current_span = trace.get_current_span()
+    if current_span.is_recording():
+        current_span.set_attribute("pattern", pattern_name)
+        current_span.set_attribute("model", model)
+        current_span.set_attribute("endpoint", f"/{path}")
+        if session_id:
+            current_span.set_attribute("session.id", session_id[:8])
 
     logfire.info(
         f"{pattern_name} request ({model}): {len(body.get('messages', []))} messages" if body else f"{pattern_name} request",
@@ -134,30 +118,15 @@ async def handle_request(request: Request, path: str):
         response_headers = proxy.filter_response_headers(dict(upstream_response.headers))
         status_code = upstream_response.status_code
 
-        span.set_attribute("http.status_code", status_code)
+        current_span.set_attribute("http.status_code", status_code)
 
         if "text/event-stream" in content_type:
             # Streaming response - pass through, call pattern.response with None body
-            # Keep span open through streaming
-            captured_span = span
-            captured_ctx_manager = ctx_manager
-
             async def stream_with_transform():
-                try:
-                    async for chunk in upstream_response.aiter_bytes():
-                        yield chunk
-                    # After streaming, call response hook (body=None for streams)
-                    await pattern.response(response_headers, None)
-                finally:
-                    try:
-                        captured_span.__exit__(None, None, None)
-                    except ValueError:
-                        pass  # Cross-context detach, harmless
-                    if captured_ctx_manager:
-                        try:
-                            captured_ctx_manager.__exit__(None, None, None)
-                        except ValueError:
-                            pass  # Cross-context detach, harmless
+                async for chunk in upstream_response.aiter_bytes():
+                    yield chunk
+                # After streaming, call response hook (body=None for streams)
+                await pattern.response(response_headers, None)
 
             return StreamingResponse(
                 stream_with_transform(),
@@ -179,10 +148,6 @@ async def handle_request(request: Request, path: str):
                 # Not JSON, just pass through
                 await pattern.response(response_headers, None)
 
-            span.__exit__(None, None, None)
-            if ctx_manager:
-                ctx_manager.__exit__(None, None, None)
-
             return Response(
                 content=response_content,
                 status_code=status_code,
@@ -190,10 +155,6 @@ async def handle_request(request: Request, path: str):
             )
 
     except Exception as e:
-        span.record_exception(e)
-        span.set_level("error")
-        span.__exit__(None, None, None)
-        if ctx_manager:
-            ctx_manager.__exit__(None, None, None)
+        current_span.record_exception(e)
         logfire.error("Loom error", error=str(e))
         raise
