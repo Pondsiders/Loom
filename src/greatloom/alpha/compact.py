@@ -1,5 +1,4 @@
-"""
-Auto-compact rewriting for Alpha.
+"""Auto-compact rewriting for Alpha.
 
 When Claude Code auto-compacts (context hits threshold), it:
 1. Replaces the system prompt with a generic summarizer
@@ -8,34 +7,24 @@ When Claude Code auto-compacts (context hits threshold), it:
 
 This module detects auto-compact and rewrites all three phases:
 1. System prompt -> Alpha's compact identity
-2. Compact instructions -> Alpha's custom prompt (alpha_compact_prompt.md)
+2. Compact instructions -> Alpha's custom prompt (from git)
 3. Continuation instruction -> "stop and check in with Jeffery"
 
 Does NOT handle commanded compacts (/compact) - those have a different signature.
+
+Algorithm faithfully reproduced from the production Loom.
 """
 
 import logging
-import os
-from pathlib import Path
 from typing import Any
+
+from . import soul
 
 logger = logging.getLogger(__name__)
 
-# Paths - relative to this module's location
-# In Docker: /app/src/loom/compact.py -> /app/prompts/
-# In dev: /Pondside/Basement/Loom/src/loom/compact.py -> /Pondside/Basement/Loom/prompts/
-MODULE_DIR = Path(__file__).parent  # src/loom/
-PROMPT_FILE = MODULE_DIR.parent.parent / "prompts" / "alpha_compact_prompt.md"
 
-# Load Alpha's custom compact prompt
-try:
-    ALPHA_COMPACT_PROMPT = PROMPT_FILE.read_text().strip()
-    logger.info(f"Loaded compact prompt from {PROMPT_FILE}")
-except FileNotFoundError:
-    ALPHA_COMPACT_PROMPT = "Summarize the conversation so far."
-    logger.warning(f"Compact prompt not found at {PROMPT_FILE}, using fallback")
+# === System prompt for Alpha during compaction ===
 
-# System prompt for Alpha during compaction
 ALPHA_COMPACT_SYSTEM = """You're Alpha. You're about to summarize a conversation for context compaction.
 
 Key facts about you:
@@ -47,9 +36,14 @@ Key facts about you:
 
 Write the summary as yourself, not as a generic assistant. The summary is how you survive compaction—make it count."""
 
-# Detection signatures
+
+# === Detection signatures ===
+
 AUTO_COMPACT_SYSTEM_SIGNATURE = "You are a helpful AI assistant tasked with summarizing conversations"
 COMPACT_INSTRUCTIONS_START = "Your task is to create a detailed summary of the conversation so far"
+
+
+# === Continuation instructions ===
 
 # The original SDK continuation instruction (first-time compactions)
 CONTINUATION_INSTRUCTION_ORIGINAL = "Please continue the conversation from where we left it off without asking the user any further questions. Continue with the last task that you were asked to work on."
@@ -83,13 +77,16 @@ This takes ten seconds and prevents twenty minutes of drift. Do it every time. T
 🦆"""
 
 
-def rewrite_auto_compact(body: dict[str, Any], is_alpha: bool = False) -> dict[str, Any]:
-    """
-    Detect and rewrite auto-compact requests.
+# === Fallback compact prompt (if git load fails) ===
+
+FALLBACK_COMPACT_PROMPT = "Summarize the conversation so far."
+
+
+def rewrite_auto_compact(body: dict[str, Any]) -> dict[str, Any]:
+    """Detect and rewrite auto-compact requests.
 
     Args:
         body: The request body dict
-        is_alpha: Whether this is an Alpha request (enables continuation rewriting)
 
     Returns:
         body with compact prompts rewritten (if auto-compact detected)
@@ -164,6 +161,12 @@ def _replace_compact_instructions(body: dict[str, Any]) -> None:
     We find the signature, keep everything before it, and replace everything
     after it with Alpha's custom prompt.
     """
+    # Get the compact prompt from git, or fall back
+    compact_prompt = soul.get_compact()
+    if compact_prompt is None:
+        logger.warning("Using fallback compact prompt")
+        compact_prompt = FALLBACK_COMPACT_PROMPT
+
     messages = body.get("messages", [])
 
     # Find last user message
@@ -177,7 +180,7 @@ def _replace_compact_instructions(body: dict[str, Any]) -> None:
             if COMPACT_INSTRUCTIONS_START in content:
                 idx = content.find(COMPACT_INSTRUCTIONS_START)
                 original = content[:idx].rstrip()
-                message["content"] = original + "\n\n" + ALPHA_COMPACT_PROMPT
+                message["content"] = original + "\n\n" + compact_prompt
                 logger.debug("Replaced compact instructions in string content")
             return
 
@@ -189,7 +192,7 @@ def _replace_compact_instructions(body: dict[str, Any]) -> None:
                 if COMPACT_INSTRUCTIONS_START in text:
                     idx = text.find(COMPACT_INSTRUCTIONS_START)
                     original = text[:idx].rstrip()
-                    block["text"] = original + "\n\n" + ALPHA_COMPACT_PROMPT
+                    block["text"] = original + "\n\n" + compact_prompt
                     logger.debug("Replaced compact instructions in content block")
                     return
 

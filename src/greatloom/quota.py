@@ -1,8 +1,8 @@
 """
-Quota tracking for the Loom.
+Quota tracking for the Great Loom.
 
 Logs Anthropic API rate limit headers to Redis with automatic expiry.
-Compatible with the Eavesdrop dashboard.
+Compatible with the Alpha Energy dashboard.
 """
 
 import json
