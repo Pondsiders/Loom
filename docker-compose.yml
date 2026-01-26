@@ -10,6 +10,7 @@ services:
       - IOTA_CWD=/Iota
       - LOGFIRE_TOKEN=${LOGFIRE_TOKEN}
       - OTEL_SERVICE_NAME=loom-greatloom
+      - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=redis://alpha-pi:6379
     volumes:
       - /Iota:/Iota:ro  # Iota's working directory (read-only)

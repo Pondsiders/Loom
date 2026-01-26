@@ -61,6 +61,7 @@ class AlphaPattern:
         # Get context from headers
         machine_name = headers.get("x-machine-name", "unknown")
         session_id = headers.get("x-session-id", "")
+        client_name = headers.get("x-loom-client")  # e.g., "duckpond"
 
         # Fetch dynamic data in parallel
         hud_data, (summary1, summary2), memorables = await asyncio.gather(
@@ -93,8 +94,12 @@ class AlphaPattern:
             past_text = f"【PAST】\n\n{''.join(past_parts)}\n\n【/PAST】"
             system_blocks.append({"type": "text", "text": past_text})
 
-        # PRESENT - machine + weather
-        present_parts = [f"**Machine:** {machine_name}"]
+        # PRESENT - client + machine + weather
+        if client_name:
+            present_parts = [f"**Client:** {client_name.title()}"]
+            present_parts.append(f"\n**Machine:** {machine_name}")
+        else:
+            present_parts = [f"**Machine:** {machine_name}"]
         if hud_data.weather:
             present_parts.append(f"\n\n{hud_data.weather}")
 
