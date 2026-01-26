@@ -14,7 +14,7 @@ from opentelemetry import trace
 
 from .router import init_patterns, get_pattern_from_request
 from .metadata import extract_and_strip_metadata
-from . import proxy
+from . import proxy, quota
 
 # Suppress harmless OTel context warnings before they're configured
 logging.getLogger("opentelemetry.context").setLevel(logging.CRITICAL)
@@ -119,6 +119,9 @@ async def handle_request(request: Request, path: str):
             content=body_bytes,
             params=dict(request.query_params),
         )
+
+        # Log quota information to Redis (for Alpha Energy dashboard)
+        quota.log_quota(dict(upstream_response.headers))
 
         # Prepare response
         content_type = upstream_response.headers.get("content-type", "")
