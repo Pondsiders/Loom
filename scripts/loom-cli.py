@@ -76,9 +76,9 @@ def transform(
         "x-machine-name": "loom-cli",
     }
 
-    # Transform
+    # Transform (pass None for metadata - CLI doesn't inject memories)
     async def do_transform():
-        return await pattern_instance.request(headers, body)
+        return await pattern_instance.request(headers, body, metadata=None)
 
     _, transformed_body = asyncio.run(do_transform())
 

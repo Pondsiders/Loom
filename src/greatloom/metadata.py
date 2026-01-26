@@ -42,8 +42,10 @@ def extract_and_strip_metadata(body: dict) -> tuple[dict | None, dict]:
     metadata = None
     block_to_remove = None  # (msg_idx, block_idx) or (msg_idx, None for string content)
 
-    # Search messages for the canary
-    for msg_idx, msg in enumerate(messages):
+    # Search messages BACKWARDS for the canary - we want the MOST RECENT metadata
+    # because each turn adds a new metadata block, and old ones stay in history
+    for msg_idx in range(len(messages) - 1, -1, -1):
+        msg = messages[msg_idx]
         if msg.get("role") != "user":
             continue
 

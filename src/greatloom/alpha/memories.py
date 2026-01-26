@@ -54,10 +54,10 @@ def format_relative_time(created_at: str) -> str:
 
 
 def format_memory_block(memory: dict) -> str:
-    """Format a single memory as an XML-ish block.
+    """Format a single memory as a plain text block.
 
     Args:
-        memory: Dict with id, created_at, content
+        memory: Dict with id, created_at, content, query (optional)
 
     Returns:
         Formatted memory block string
@@ -65,12 +65,17 @@ def format_memory_block(memory: dict) -> str:
     mem_id = memory.get("id", "?")
     created_at = memory.get("created_at", "")
     content = memory.get("content", "").strip()
+    query = memory.get("query")
 
     relative_time = format_relative_time(created_at)
 
-    return f"""<memory id={mem_id} created="{relative_time}">
-{content}
-</memory>"""
+    # If we have the triggering query, use it as the header
+    if query:
+        return f""""{query}": Memory #{mem_id} ({relative_time})
+{content}"""
+    else:
+        return f"""Memory #{mem_id} ({relative_time}):
+{content}"""
 
 
 def inject_memories(body: dict, metadata: dict) -> None:
@@ -129,19 +134,11 @@ def inject_memories(body: dict, metadata: dict) -> None:
         block_text = format_memory_block(mem)
         memory_blocks.append({"type": "text", "text": block_text})
 
-    # Add a header block with queries
-    queries_str = ", ".join(f'"{q}"' for q in queries) if queries else "none"
-    header = f"""<memories queries={queries_str}>
-The following memories were surfaced by your prompt. Read them, then respond.
-"""
-    footer = """</memories>
-<note>
-Memno knows more. Use the Memno agent to ask follow-up questions.
-</note>"""
+    # Footer with hint about Memno
+    footer = "(Memno knows more. Use the Memno agent to ask follow-up questions.)"
 
-    # Build the injection: header + memories + footer
+    # Build the injection: memories + footer
     injection_blocks = [
-        {"type": "text", "text": header},
         *memory_blocks,
         {"type": "text", "text": footer},
     ]

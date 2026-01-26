@@ -77,15 +77,15 @@ def format_block(memorables: list[str]) -> str:
     for mem in cleaned:
         lines.append(f"- {mem}")
 
-    return "<intro>\n" + "\n".join(lines) + "\n</intro>"
+    return "\n".join(lines)
 
 
-def inject_into_messages(body: dict, session_id: str, block: str) -> None:
-    """Inject memorables block into the request body.
+def inject_as_final_message(body: dict, session_id: str, block: str) -> None:
+    """Inject memorables block as the final user message.
 
-    Modifies body in place. Adds a new user message content block
-    (type: text) containing the formatted memorables. This appears
-    after the actual user message content.
+    Modifies body in place. Adds a NEW user message at the very end
+    containing the formatted memorables. This puts Intro's suggestions
+    closest to response generation (maximum attention recency).
 
     Args:
         body: The full request body dict (modified in place)
@@ -99,34 +99,10 @@ def inject_into_messages(body: dict, session_id: str, block: str) -> None:
     if not messages:
         return
 
-    # Find the last user message that contains actual human text (not just tool results)
-    for i in range(len(messages) - 1, -1, -1):
-        if messages[i].get("role") == "user":
-            content = messages[i].get("content", [])
+    # Add as the final user message
+    messages.append({
+        "role": "user",
+        "content": [{"type": "text", "text": block}],
+    })
 
-            # If content is a string, convert to array format
-            if isinstance(content, str):
-                content = [{"type": "text", "text": content}]
-                content.append({"type": "text", "text": block})
-                messages[i]["content"] = content
-                logger.info(f"Injected memorables into user message for session {session_id[:8]}")
-                return
-
-            # If content is a list, check if it has any text blocks (not just tool_results)
-            if isinstance(content, list):
-                has_human_text = any(
-                    isinstance(b, dict) and b.get("type") == "text"
-                    for b in content
-                )
-
-                if has_human_text:
-                    content.append({"type": "text", "text": block})
-                    messages[i]["content"] = content
-                    logger.info(f"Injected memorables into user message for session {session_id[:8]}")
-                    return
-                else:
-                    # Tool-result-only message, skip it
-                    logger.debug("Skipping tool-result-only user message")
-                    continue
-
-    logger.debug("No suitable user message found for memorables injection")
+    logger.info(f"Injected Intro as final message for session {session_id[:8]}")

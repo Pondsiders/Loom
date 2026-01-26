@@ -73,7 +73,7 @@ class AlphaPattern:
         system_blocks = []
 
         # ETERNAL - my soul
-        eternal_text = f"<eternal>\n{soul.get_soul()}\n</eternal>"
+        eternal_text = f"【ETERNAL】\n{soul.get_soul()}\n【/ETERNAL】"
         system_blocks.append({"type": "text", "text": eternal_text})
 
         # PAST - capsule summaries + today
@@ -90,7 +90,7 @@ class AlphaPattern:
             past_parts.append(hud_data.today_so_far)
 
         if past_parts:
-            past_text = f"<past>\n\n{''.join(past_parts)}\n\n</past>"
+            past_text = f"【PAST】\n\n{''.join(past_parts)}\n\n【/PAST】"
             system_blocks.append({"type": "text", "text": past_text})
 
         # PRESENT - machine + weather
@@ -98,7 +98,7 @@ class AlphaPattern:
         if hud_data.weather:
             present_parts.append(f"\n\n{hud_data.weather}")
 
-        present_text = f"<present>\n\n{''.join(present_parts)}\n\n</present>"
+        present_text = f"【PRESENT】\n\n{''.join(present_parts)}\n\n【/PRESENT】"
         system_blocks.append({"type": "text", "text": present_text})
 
         # FUTURE - calendar + todos
@@ -111,9 +111,9 @@ class AlphaPattern:
             future_parts.append(hud_data.todos)
 
         if future_parts:
-            future_text = f"<future>\n\n{''.join(future_parts)}\n\n</future>"
+            future_text = f"【FUTURE】\n\n{''.join(future_parts)}\n\n【/FUTURE】"
         else:
-            future_text = "<future>\n\nNo events\n\n</future>"
+            future_text = "【FUTURE】\n\nNo events\n\n【/FUTURE】"
         system_blocks.append({"type": "text", "text": future_text})
 
         # === Inject system blocks into request ===
@@ -139,16 +139,18 @@ class AlphaPattern:
             logger.warning(f"Unexpected system format: {type(existing_system)}, replacing entirely")
             body["system"] = system_blocks
 
-        # === Inject Intro memorables into user message ===
-        if memorables:
-            block = intro.format_block(memorables)
-            intro.inject_into_messages(body, session_id, block)
-
         # === Inject memories from metadata (if present) ===
         # Memories come from Cortex via the hook, surfaced by the user's prompt
         # They appear AFTER the user message for attention recency
         if metadata:
             memories.inject_memories(body, metadata)
+
+        # === Inject Intro memorables LAST ===
+        # Intro goes at the very end—closest to response generation
+        # This is the "nag" that reminds Alpha to store
+        if memorables:
+            block = intro.format_block(memorables)
+            intro.inject_as_final_message(body, session_id, block)
 
         logger.info(f"Injected Alpha system prompt ({len(system_blocks)} blocks)")
         return headers, body
