@@ -6,6 +6,8 @@ from pathlib import Path
 
 import frontmatter
 
+from . import compact
+
 logger = logging.getLogger(__name__)
 
 # Where to search for IOTA.md files
@@ -95,6 +97,9 @@ class IotaPattern:
     ) -> tuple[dict[str, str], dict]:
         """Inject Iota's system prompts into the request.
 
+        Also handles post-compact continuation prompt rewriting for testing
+        the SessionStart:compact hook's metadata injection.
+
         The system prompt comes in as an array of text blocks:
         - Element 0: Claude Agent SDK boilerplate (DO NOT TOUCH)
         - Element 1: The slot for identity (ours to replace)
@@ -104,6 +109,9 @@ class IotaPattern:
         then insert subsequent prompts as new elements after it.
         Dynamic context (IOTA.md files) is loaded fresh each request.
         """
+        # Check for post-compact continuation instruction and rewrite if found
+        body = compact.rewrite_continuation(body)
+
         # Combine static prompts with dynamic context files
         dynamic_prompts = self._load_context_files()
         all_prompts = self._static_prompts + dynamic_prompts
