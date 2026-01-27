@@ -12,9 +12,11 @@ services:
       - LOGFIRE_TOKEN=${LOGFIRE_TOKEN}
       - OTEL_SERVICE_NAME=loom
       - DATABASE_URL=${DATABASE_URL}
-      - REDIS_URL=redis://alpha-pi:6379
+      - REDIS_URL=${REDIS_URL}
+      - ANTHROPIC_API_KEY=${PONDSIDE_ANTHROPIC_API_KEY}
     volumes:
       - /Pondside:/Pondside:ro  # For soul doc and compact prompt
+      - /Pondside/Basement/Loom/last_alpha_request.json:/data/last_alpha_request.json:rw
     restart: unless-stopped
     dns:
       - ${TAILSCALE_DNS}

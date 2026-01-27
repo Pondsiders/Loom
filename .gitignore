@@ -28,3 +28,4 @@ uv.lock
 # Docker
 .docker/
 .DS_Store
+last_alpha_request*.json

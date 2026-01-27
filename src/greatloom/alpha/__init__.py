@@ -14,11 +14,11 @@ request transformation.
 import asyncio
 import logging
 
-from . import soul, hud, capsule, intro, compact, memories
+from . import soul, hud, capsule, intro, compact, memories, token_count
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["AlphaPattern", "soul", "hud", "capsule", "intro", "compact", "memories"]
+__all__ = ["AlphaPattern", "soul", "hud", "capsule", "intro", "compact", "memories", "token_count"]
 
 
 class AlphaPattern:
@@ -158,6 +158,22 @@ class AlphaPattern:
             intro.inject_as_final_message(body, session_id, block)
 
         logger.info(f"Injected Alpha system prompt ({len(system_blocks)} blocks)")
+
+        # Dump the fully-composed request for debugging
+        # Only Alpha pattern requests, not Haiku noise
+        import json
+        try:
+            with open("/data/last_alpha_request.json", "w") as f:
+                json.dump(body, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to dump request: {e}")
+
+        # === Fire-and-forget: Count tokens for context window awareness ===
+        # This runs in background, doesn't block the request
+        # Results are stashed in Redis for Duckpond to display
+        if session_id:
+            asyncio.create_task(token_count.count_and_stash(body, session_id))
+
         return headers, body
 
     async def response(
