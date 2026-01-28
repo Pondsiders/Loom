@@ -23,6 +23,11 @@ logging.getLogger("opentelemetry.context").setLevel(logging.CRITICAL)
 # Scrubbing disabled - too aggressive (redacts "session", "auth", etc.)
 # Our logs are authenticated with 30-day retention; acceptable risk for debugging visibility
 logfire.configure(distributed_tracing=True, scrubbing=False)
+
+# Instrument Python's standard logging library to flow to Logfire
+# level=INFO ensures INFO and above from all named loggers propagate to root
+logging.basicConfig(handlers=[logfire.LogfireLoggingHandler()], level=logging.INFO)
+
 logfire.instrument_httpx()
 
 

@@ -14,11 +14,11 @@ request transformation.
 import asyncio
 import logging
 
-from . import soul, hud, capsule, intro, compact, memories, token_count
+from . import soul, hud, capsule, intro, compact, memories, token_count, scrub
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["AlphaPattern", "soul", "hud", "capsule", "intro", "compact", "memories", "token_count"]
+__all__ = ["AlphaPattern", "soul", "hud", "capsule", "intro", "compact", "memories", "token_count", "scrub"]
 
 
 class AlphaPattern:
@@ -57,6 +57,10 @@ class AlphaPattern:
         # === Phase 0: Check for auto-compact and rewrite if needed ===
         # This must happen FIRST, before we inject the normal system prompt
         body = compact.rewrite_auto_compact(body)
+
+        # === Phase 0.5: Scrub noise from context ===
+        # Remove known-bad blocks and substrings that add noise without value
+        body = scrub.scrub_noise(body)
 
         # Get context from headers
         machine_name = headers.get("x-machine-name", "unknown")
