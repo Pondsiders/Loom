@@ -14,6 +14,8 @@ request transformation.
 import asyncio
 import logging
 
+import pendulum
+
 from . import soul, hud, capsule, intro, compact, memories, token_count, scrub
 
 logger = logging.getLogger(__name__)
@@ -95,8 +97,11 @@ class AlphaPattern:
             past_parts.append(f"## Letter from last night{time_str}\n\n{hud_data.to_self}")
         if hud_data.today_so_far:
             # Format header here—today routine stores raw summary
-            time_str = f" ({hud_data.today_so_far_time})" if hud_data.today_so_far_time else ""
-            past_parts.append(f"## Today so far{time_str}\n\n{hud_data.today_so_far}")
+            # Include full date for orientation, especially post-compaction
+            now = pendulum.now("America/Los_Angeles")
+            date_str = now.format("dddd, MMMM D, YYYY")
+            time_str = hud_data.today_so_far_time or now.format("h:mm A")
+            past_parts.append(f"## Today so far ({date_str}, {time_str})\n\n{hud_data.today_so_far}")
 
         if past_parts:
             past_text = "【PAST】\n\n" + "\n\n".join(past_parts) + "\n\n【/PAST】"
