@@ -83,24 +83,19 @@ class AlphaPattern:
 
         # PAST - capsule summaries + to_self letter + today
         # Order: yesterday, last night, to_self, today so far
+        # Each piece has its own header; double newlines separate sections
         past_parts = []
         if summary1:
-            past_parts.append(summary1)
+            past_parts.append(summary1)  # Has "# This part is a summary..." header
         if summary2:
-            if past_parts:
-                past_parts.append("\n---\n")
-            past_parts.append(summary2)
+            past_parts.append(summary2)  # Has "# This part is a summary..." header
         if hud_data.to_self:
-            if past_parts:
-                past_parts.append("\n---\n")
-            past_parts.append(hud_data.to_self)
+            past_parts.append(hud_data.to_self)  # Has "**Letter from last night**" header
         if hud_data.today_so_far:
-            if past_parts:
-                past_parts.append("\n---\n")
-            past_parts.append(hud_data.today_so_far)
+            past_parts.append(hud_data.today_so_far)  # Has "**Today so far**" header
 
         if past_parts:
-            past_text = f"【PAST】\n\n{''.join(past_parts)}\n\n【/PAST】"
+            past_text = "【PAST】\n\n" + "\n\n".join(past_parts) + "\n\n【/PAST】"
             system_blocks.append({"type": "text", "text": past_text})
 
         # PRESENT - client + machine + weather
