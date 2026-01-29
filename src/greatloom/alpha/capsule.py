@@ -24,12 +24,11 @@ def _format_summary(row: tuple) -> str:
     is_night = start.hour >= 22 or start.hour < 6
 
     if is_night:
-        header = (
-            f"# This part is a summary of the events of "
-            f"{start.format('dddd')} night {start.format('MMM')} {start.day}-{end.day} {end.year}"
-        )
+        # Night summary spans midnight, e.g. "Wednesday night, January 28-29, 2026"
+        header = f"## {start.format('dddd')} night, {start.format('MMMM')} {start.day}-{end.day}, {end.year}"
     else:
-        header = f"# This part is a summary of the events of {start.format('dddd MMM D YYYY')}"
+        # Day summary, e.g. "Wednesday, January 28, 2026"
+        header = f"## {start.format('dddd, MMMM D, YYYY')}"
 
     return f"{header}\n\n{summary}"
 

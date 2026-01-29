@@ -26,6 +26,7 @@ class HUDData:
     calendar: str | None = None
     todos: str | None = None
     to_self: str | None = None  # Nightly letter from last-night-me
+    to_self_time: str | None = None  # Timestamp for header formatting
     today_so_far: str | None = None
 
 
@@ -44,11 +45,12 @@ async def fetch() -> HUDData:
         r = await _get_redis()
 
         # Parallel fetches
-        weather, calendar, todos, to_self, today_so_far = await asyncio.gather(
+        weather, calendar, todos, to_self, to_self_time, today_so_far = await asyncio.gather(
             r.get("hud:weather"),
             r.get("hud:calendar"),
             r.get("hud:todos"),
             r.get("systemprompt:past:to_self"),
+            r.get("systemprompt:past:to_self:time"),
             r.get("systemprompt:past:today"),
             return_exceptions=True,
         )
@@ -61,6 +63,7 @@ async def fetch() -> HUDData:
             calendar=calendar if not isinstance(calendar, Exception) else None,
             todos=todos if not isinstance(todos, Exception) else None,
             to_self=to_self if not isinstance(to_self, Exception) else None,
+            to_self_time=to_self_time if not isinstance(to_self_time, Exception) else None,
             today_so_far=today_so_far if not isinstance(today_so_far, Exception) else None,
         )
     except Exception as e:

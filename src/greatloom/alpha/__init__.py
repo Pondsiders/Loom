@@ -83,16 +83,19 @@ class AlphaPattern:
 
         # PAST - capsule summaries + to_self letter + today
         # Order: yesterday, last night, to_self, today so far
-        # Each piece has its own header; double newlines separate sections
+        # Headers are added here (presentation layer), content comes from upstream
         past_parts = []
         if summary1:
-            past_parts.append(summary1)  # Has "# This part is a summary..." header
+            past_parts.append(summary1)  # Has ## header from capsule.py
         if summary2:
-            past_parts.append(summary2)  # Has "# This part is a summary..." header
+            past_parts.append(summary2)  # Has ## header from capsule.py
         if hud_data.to_self:
-            past_parts.append(hud_data.to_self)  # Has "**Letter from last night**" header
+            # Format header here—to_self routine stores raw letter
+            time_str = f" ({hud_data.to_self_time})" if hud_data.to_self_time else ""
+            past_parts.append(f"## Letter from last night{time_str}\n\n{hud_data.to_self}")
         if hud_data.today_so_far:
-            past_parts.append(hud_data.today_so_far)  # Has "**Today so far**" header
+            # TODO: today.py still includes header—will fix when Routinified
+            past_parts.append(hud_data.today_so_far)
 
         if past_parts:
             past_text = "【PAST】\n\n" + "\n\n".join(past_parts) + "\n\n【/PAST】"
