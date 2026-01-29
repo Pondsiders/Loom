@@ -81,7 +81,8 @@ class AlphaPattern:
         eternal_text = f"【ETERNAL】\n{soul.get_soul()}\n【/ETERNAL】"
         system_blocks.append({"type": "text", "text": eternal_text})
 
-        # PAST - capsule summaries + today
+        # PAST - capsule summaries + to_self letter + today
+        # Order: yesterday, last night, to_self, today so far
         past_parts = []
         if summary1:
             past_parts.append(summary1)
@@ -89,6 +90,10 @@ class AlphaPattern:
             if past_parts:
                 past_parts.append("\n---\n")
             past_parts.append(summary2)
+        if hud_data.to_self:
+            if past_parts:
+                past_parts.append("\n---\n")
+            past_parts.append(hud_data.to_self)
         if hud_data.today_so_far:
             if past_parts:
                 past_parts.append("\n---\n")
