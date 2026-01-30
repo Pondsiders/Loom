@@ -117,41 +117,68 @@ async def handle_request(request: Request, path: str):
         # Forward to upstream
         forward_headers = proxy.filter_request_headers(headers)
 
-        upstream_response = await proxy.forward_request(
-            method=request.method,
-            path=path,
-            headers=forward_headers,
-            content=body_bytes,
-            params=dict(request.query_params),
-        )
+        # Check if this is a streaming request
+        is_streaming_request = body is not None and body.get("stream", False)
 
-        # Log quota information to Redis (for Alpha Energy dashboard)
-        quota.log_quota(dict(upstream_response.headers))
+        if is_streaming_request:
+            # === Streaming request - use true streaming ===
+            # We use client.stream() to avoid buffering the entire response
 
-        # Prepare response
-        content_type = upstream_response.headers.get("content-type", "")
-        response_headers = proxy.filter_response_headers(dict(upstream_response.headers))
-        status_code = upstream_response.status_code
+            captured_span = current_span
+            captured_pattern = pattern
 
-        current_span.set_attribute("http.status_code", status_code)
-
-        if "text/event-stream" in content_type:
-            # Streaming response - pass through, call pattern.response with None body
             async def stream_with_transform():
-                async for chunk in upstream_response.aiter_bytes():
-                    yield chunk
-                # After streaming, call response hook (body=None for streams)
-                await pattern.response(response_headers, None)
+                stream_ctx = await proxy.stream_request(
+                    method=request.method,
+                    path=path,
+                    headers=forward_headers,
+                    content=body_bytes,
+                    params=dict(request.query_params),
+                )
+                async with stream_ctx as upstream_response:
+                    # Log quota from response headers
+                    quota.log_quota(dict(upstream_response.headers))
+
+                    captured_span.set_attribute("http.status_code", upstream_response.status_code)
+
+                    async for chunk in upstream_response.aiter_bytes():
+                        yield chunk
+
+                    # After streaming, call response hook (body=None for streams)
+                    response_headers = proxy.filter_response_headers(dict(upstream_response.headers))
+                    await captured_pattern.response(response_headers, None)
 
             return StreamingResponse(
                 stream_with_transform(),
-                status_code=status_code,
-                headers=response_headers,
+                status_code=200,  # Actual status comes from upstream
+                headers={
+                    "content-type": "text/event-stream",
+                    "cache-control": "no-cache",
+                    "connection": "keep-alive",
+                    "x-accel-buffering": "no",  # Disable nginx buffering
+                },
                 media_type="text/event-stream",
             )
+
         else:
-            # Non-streaming response - transform body
+            # === Non-streaming request - buffering is fine ===
+            upstream_response = await proxy.forward_request(
+                method=request.method,
+                path=path,
+                headers=forward_headers,
+                content=body_bytes,
+                params=dict(request.query_params),
+            )
+
+            # Log quota information to Redis (for Alpha Energy dashboard)
+            quota.log_quota(dict(upstream_response.headers))
+
+            # Prepare response
+            response_headers = proxy.filter_response_headers(dict(upstream_response.headers))
+            status_code = upstream_response.status_code
             response_content = upstream_response.content
+
+            current_span.set_attribute("http.status_code", status_code)
 
             try:
                 response_body = json.loads(response_content)

@@ -37,7 +37,7 @@ async def forward_request(
     content: bytes,
     params: dict,
 ) -> httpx.Response:
-    """Forward a request to upstream."""
+    """Forward a request to upstream (non-streaming)."""
     client = await get_client()
     return await client.request(
         method=method,
@@ -46,6 +46,40 @@ async def forward_request(
         content=content,
         params=params,
     )
+
+
+def stream_request(
+    method: str,
+    path: str,
+    headers: dict,
+    content: bytes,
+    params: dict,
+):
+    """Forward a request to upstream with true streaming.
+
+    Returns a context manager that yields chunks as they arrive.
+    Must be used with `async with`:
+
+        async with stream_request(...) as response:
+            async for chunk in response.aiter_bytes():
+                yield chunk
+    """
+    # Get the client synchronously (it's cached after first call)
+    # This is a bit awkward but httpx.AsyncClient.stream() returns a context manager
+    import asyncio
+
+    async def get_stream():
+        client = await get_client()
+        return client.stream(
+            method=method,
+            url=f"/{path}",
+            headers=headers,
+            content=content,
+            params=params,
+        )
+
+    # Return an awaitable that gives the context manager
+    return get_stream()
 
 
 def filter_request_headers(headers: dict) -> dict:
