@@ -16,7 +16,8 @@ services:
       - ANTHROPIC_API_KEY=${PONDSIDE_ANTHROPIC_API_KEY}
     volumes:
       - /Pondside:/Pondside:ro  # For soul doc and compact prompt
-      - /Pondside/Basement/Loom/last_alpha_request.json:/data/last_alpha_request.json:rw
+      - /Pondside/Basement/Loom/last_alpha_request_pre.json:/data/last_alpha_request_pre.json:rw
+      - /Pondside/Basement/Loom/last_alpha_request_post.json:/data/last_alpha_request_post.json:rw
     restart: unless-stopped
     dns:
       - ${TAILSCALE_DNS}

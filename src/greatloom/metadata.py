@@ -54,18 +54,27 @@ def extract_metadata(body: dict) -> tuple[dict | None, dict]:
 
         if isinstance(content, str):
             if DELIVERATOR_CANARY in content:
+                # Must be actual metadata, not code mentioning the canary
+                # Real hook output has "hook additional context:" near the start
+                lower_content = content.lower()
+                hook_marker_pos = lower_content.find("hook additional context:")
+                if hook_marker_pos == -1 or hook_marker_pos > 100:
+                    continue
                 # Find the JSON
                 try:
                     start = content.find("{")
                     end = content.rfind("}") + 1
                     if start != -1 and end > start:
                         block_metadata = json.loads(content[start:end])
+                        # Verify it's actual metadata
+                        if "canary" not in block_metadata:
+                            continue
                         sent_at = block_metadata.get("sent_at", "")
                         transforms.append((msg_idx, None, sent_at))
                         metadata = block_metadata
                         logger.debug(f"Found metadata in message {msg_idx} (string content)")
                 except json.JSONDecodeError as e:
-                    logger.warning(f"Failed to parse metadata JSON: {e}")
+                    logger.debug(f"Skipping non-metadata block: {e}")
 
         elif isinstance(content, list):
             for block_idx, block in enumerate(content):
@@ -73,17 +82,25 @@ def extract_metadata(body: dict) -> tuple[dict | None, dict]:
                     continue
                 text = block.get("text", "")
                 if DELIVERATOR_CANARY in text:
+                    # Must be actual metadata, not code mentioning the canary
+                    lower_text = text.lower()
+                    hook_marker_pos = lower_text.find("hook additional context:")
+                    if hook_marker_pos == -1 or hook_marker_pos > 100:
+                        continue
                     try:
                         start = text.find("{")
                         end = text.rfind("}") + 1
                         if start != -1 and end > start:
                             block_metadata = json.loads(text[start:end])
+                            # Verify it's actual metadata
+                            if "canary" not in block_metadata:
+                                continue
                             sent_at = block_metadata.get("sent_at", "")
                             transforms.append((msg_idx, block_idx, sent_at))
                             metadata = block_metadata
                             logger.debug(f"Found metadata in message {msg_idx} block {block_idx}")
                     except json.JSONDecodeError as e:
-                        logger.warning(f"Failed to parse metadata JSON: {e}")
+                        logger.debug(f"Skipping non-metadata block: {e}")
 
     # Apply transforms - replace each metadata block with its timestamp
     # Process in reverse order so indices stay valid

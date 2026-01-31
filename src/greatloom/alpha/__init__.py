@@ -12,6 +12,7 @@ request transformation.
 """
 
 import asyncio
+import json
 import logging
 
 import pendulum
@@ -19,6 +20,114 @@ import pendulum
 from . import soul, hud, capsule, intro, compact, memories, token_count, scrub
 
 logger = logging.getLogger(__name__)
+
+# Canary for structured input from Duckpond
+ALPHA_CANARY = "ALPHA_METADATA_UlVCQkVSRFVDSw"
+
+
+def _is_metadata_envelope(text: str) -> dict | None:
+    """Check if text is a valid metadata envelope. Returns parsed envelope or None.
+
+    Six-layer defense against false positives:
+    1. Text starts with '{' and ends with '}' (must BE JSON, not contain it)
+    2. Parses as valid JSON
+    3. Has 'canary' key
+    4. Canary value matches ALPHA_CANARY exactly
+    5. Has 'prompt' key (our contract)
+    6. (Caller ensures role==user and type==text)
+
+    This protects against nightmare scenarios like the canary appearing in
+    tool results (e.g., Edit calls writing code that mentions the canary).
+    """
+    text = text.strip()
+
+    # Layer 1: Must look like standalone JSON
+    if not (text.startswith("{") and text.endswith("}")):
+        return None
+
+    # Layer 2: Must parse as valid JSON
+    try:
+        envelope = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+    # Layer 3 & 4: Must have canary key with exact value
+    if envelope.get("canary") != ALPHA_CANARY:
+        return None
+
+    # Layer 5: Must have prompt key
+    if "prompt" not in envelope:
+        return None
+
+    return envelope
+
+
+def unwrap_structured_input(body: dict) -> tuple[dict, dict | None]:
+    """Unwrap structured input from Duckpond.
+
+    Duckpond sends user prompts wrapped in a JSON envelope. The SDK stores
+    these in the transcript as-is, so we need to clean ALL user messages,
+    not just the current one.
+
+    Algorithm:
+    1. Iterate over ALL messages
+    2. For each user message, find and replace metadata envelopes with prose
+    3. Keep metadata only from the LAST user message (current turn)
+
+    Returns (body, metadata) - metadata is None if no structured input found.
+    """
+    messages = body.get("messages", [])
+    if not messages:
+        return body, None
+
+    last_metadata = None
+    cleaned_count = 0
+
+    for msg in messages:
+        # Layer 6a: Only process user messages
+        if msg.get("role") != "user":
+            continue
+
+        content = msg.get("content")
+
+        # Handle string content
+        if isinstance(content, str):
+            envelope = _is_metadata_envelope(content)
+            if envelope:
+                msg["content"] = envelope.get("prompt", "")
+                last_metadata = envelope
+                cleaned_count += 1
+
+        # Handle array of content blocks
+        elif isinstance(content, list):
+            for block in content:
+                # Layer 6b: Only process text blocks
+                if not isinstance(block, dict) or block.get("type") != "text":
+                    continue
+
+                text = block.get("text", "")
+                envelope = _is_metadata_envelope(text)
+                if envelope:
+                    # Replace the block's text with the extracted prompt
+                    block["text"] = envelope.get("prompt", "")
+                    last_metadata = envelope
+                    cleaned_count += 1
+
+    if cleaned_count > 0:
+        logger.info(f"Unwrapped {cleaned_count} metadata envelope(s) from {last_metadata.get('client', '?') if last_metadata else '?'}")
+
+    # Return metadata from the last (current) turn only
+    if last_metadata:
+        return body, {
+            "session_id": last_metadata.get("session_id"),
+            "pattern": last_metadata.get("pattern"),
+            "client": last_metadata.get("client"),
+            "traceparent": last_metadata.get("traceparent"),
+            "sent_at": last_metadata.get("sent_at"),
+            "memories": last_metadata.get("memories", []),
+        }
+
+    return body, None
 
 __all__ = ["AlphaPattern", "soul", "hud", "capsule", "intro", "compact", "memories", "token_count", "scrub"]
 
@@ -56,6 +165,13 @@ class AlphaPattern:
         - Intro memorables injection (surfaced by conversation)
         """
 
+        # === Checkpoint: Log raw incoming request ===
+        try:
+            with open("/data/last_alpha_request_pre.json", "w") as f:
+                json.dump({"headers": headers, "body": body, "metadata": metadata}, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to dump pre-request: {e}")
+
         # === Phase 0: Check for auto-compact and rewrite if needed ===
         # This must happen FIRST, before we inject the normal system prompt
         body = compact.rewrite_auto_compact(body)
@@ -63,6 +179,15 @@ class AlphaPattern:
         # === Phase 0.5: Scrub noise from context ===
         # Remove known-bad blocks and substrings that add noise without value
         body = scrub.scrub_noise(body)
+
+        # === Phase 1: Unwrap structured input (Duckpond) ===
+        # Duckpond wraps user prompts in JSON. Extract and merge metadata.
+        body, structured_meta = unwrap_structured_input(body)
+        if structured_meta:
+            if metadata is None:
+                metadata = structured_meta
+            else:
+                metadata = {**metadata, **structured_meta}
 
         # Get context from headers
         machine_name = headers.get("x-machine-name", "unknown")
@@ -135,23 +260,17 @@ class AlphaPattern:
         system_blocks.append({"type": "text", "text": future_text})
 
         # === Inject system blocks into request ===
+        # SDK sends: [0]=billing header, [1]=SDK boilerplate, [2]=our safety envelope
+        # We keep [0], remove [1] and [2], add our soul blocks
         existing_system = body.get("system")
 
         if existing_system is None:
             body["system"] = system_blocks
 
-        elif isinstance(existing_system, list) and len(existing_system) >= 2:
-            # Array format from Claude Agent SDK
-            # Element 0 is SDK boilerplate — leave it alone
-            # Replace element 1 and insert our additional blocks after it
-            existing_system[1] = system_blocks[0]
-            for i, block in enumerate(system_blocks[1:], start=2):
-                existing_system.insert(i, block)
-            body["system"] = existing_system
-
-        elif isinstance(existing_system, list):
-            existing_system.extend(system_blocks)
-            body["system"] = existing_system
+        elif isinstance(existing_system, list) and len(existing_system) >= 1:
+            # Keep the billing header (element 0), replace everything else
+            billing_header = existing_system[0]
+            body["system"] = [billing_header] + system_blocks
 
         else:
             logger.warning(f"Unexpected system format: {type(existing_system)}, replacing entirely")
@@ -172,14 +291,12 @@ class AlphaPattern:
 
         logger.info(f"Injected Alpha system prompt ({len(system_blocks)} blocks)")
 
-        # Dump the fully-composed request for debugging
-        # Only Alpha pattern requests, not Haiku noise
-        import json
+        # === Checkpoint: Log fully-composed request (post-processing) ===
         try:
-            with open("/data/last_alpha_request.json", "w") as f:
+            with open("/data/last_alpha_request_post.json", "w") as f:
                 json.dump(body, f, indent=2)
         except Exception as e:
-            logger.warning(f"Failed to dump request: {e}")
+            logger.warning(f"Failed to dump post-request: {e}")
 
         # === Fire-and-forget: Count tokens for context window awareness ===
         # This runs in background, doesn't block the request
