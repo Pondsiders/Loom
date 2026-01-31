@@ -335,11 +335,9 @@ class AlphaPattern:
             logger.warning(f"Unexpected system format: {type(existing_system)}, replacing entirely")
             body["system"] = system_blocks
 
-        # === Inject memories from metadata (if present) ===
-        # Memories come from Cortex via the hook, surfaced by the user's prompt
-        # They appear AFTER the user message for attention recency
-        if metadata:
-            memories.inject_memories(body, metadata)
+        # NOTE: Memories are injected during unwrap_structured_input() now.
+        # They get concatenated into the same text block as the prompt.
+        # No separate inject_memories() call needed.
 
         # === Inject Intro memorables LAST ===
         # Intro goes at the very end—closest to response generation
