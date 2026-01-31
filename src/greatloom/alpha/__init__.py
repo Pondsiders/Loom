@@ -62,6 +62,59 @@ def _is_metadata_envelope(text: str) -> dict | None:
     return envelope
 
 
+def _format_memory_inline(memory: dict) -> str:
+    """Format a memory for inline inclusion in the prompt string.
+
+    Uses the same format as memories.format_memory_block() but imported here
+    to avoid circular imports. Keep these in sync!
+    """
+    mem_id = memory.get("id", "?")
+    created_at = memory.get("created_at", "")
+    content = memory.get("content", "").strip()
+    score = memory.get("score")
+
+    # Simple relative time formatting
+    relative_time = created_at  # fallback
+    try:
+        import pendulum
+        dt = pendulum.parse(created_at)
+        now = pendulum.now(dt.timezone or "America/Los_Angeles")
+        diff = now.diff(dt)
+        if diff.in_days() == 0:
+            relative_time = f"today at {dt.format('h:mm A')}"
+        elif diff.in_days() == 1:
+            relative_time = f"yesterday at {dt.format('h:mm A')}"
+        elif diff.in_days() < 7:
+            relative_time = f"{diff.in_days()} days ago"
+        elif diff.in_days() < 30:
+            weeks = diff.in_days() // 7
+            relative_time = f"{weeks} week{'s' if weeks > 1 else ''} ago"
+        else:
+            relative_time = dt.format("ddd MMM D YYYY")
+    except Exception:
+        pass
+
+    # Include score if present (helps with debugging/transparency)
+    score_str = f", score {score:.2f}" if score else ""
+    return f"Memory #{mem_id} ({relative_time}{score_str}):\n{content}"
+
+
+def _build_unwrapped_text(envelope: dict) -> str:
+    """Build the replacement text from an envelope: prompt + memories concatenated."""
+    prompt = envelope.get("prompt", "")
+    memories_list = envelope.get("memories", [])
+
+    if not memories_list:
+        return prompt
+
+    # Build: prompt + blank line + each memory separated by blank lines
+    parts = [prompt]
+    for mem in memories_list:
+        parts.append(_format_memory_inline(mem))
+
+    return "\n\n".join(parts)
+
+
 def unwrap_structured_input(body: dict) -> tuple[dict, dict | None]:
     """Unwrap structured input from Duckpond.
 
@@ -71,8 +124,13 @@ def unwrap_structured_input(body: dict) -> tuple[dict, dict | None]:
 
     Algorithm:
     1. Iterate over ALL messages
-    2. For each user message, find and replace metadata envelopes with prose
-    3. Keep metadata only from the LAST user message (current turn)
+    2. For each user message, find and replace metadata envelopes
+    3. Replace with: prompt + memories (as one concatenated string)
+    4. Keep metadata only from the LAST user message (current turn)
+
+    Memories are DURABLE: they stay in context on future turns, providing
+    richer conversational texture. The dedup system ensures we don't see
+    the same memory twice.
 
     Returns (body, metadata) - metadata is None if no structured input found.
     """
@@ -94,7 +152,7 @@ def unwrap_structured_input(body: dict) -> tuple[dict, dict | None]:
         if isinstance(content, str):
             envelope = _is_metadata_envelope(content)
             if envelope:
-                msg["content"] = envelope.get("prompt", "")
+                msg["content"] = _build_unwrapped_text(envelope)
                 last_metadata = envelope
                 cleaned_count += 1
 
@@ -108,13 +166,14 @@ def unwrap_structured_input(body: dict) -> tuple[dict, dict | None]:
                 text = block.get("text", "")
                 envelope = _is_metadata_envelope(text)
                 if envelope:
-                    # Replace the block's text with the extracted prompt
-                    block["text"] = envelope.get("prompt", "")
+                    # Replace the block's text with prompt + memories
+                    block["text"] = _build_unwrapped_text(envelope)
                     last_metadata = envelope
                     cleaned_count += 1
 
     if cleaned_count > 0:
-        logger.info(f"Unwrapped {cleaned_count} metadata envelope(s) from {last_metadata.get('client', '?') if last_metadata else '?'}")
+        mem_count = len(last_metadata.get("memories", [])) if last_metadata else 0
+        logger.info(f"Unwrapped {cleaned_count} envelope(s), {mem_count} memories preserved")
 
     # Return metadata from the last (current) turn only
     if last_metadata:

@@ -81,9 +81,12 @@ def format_memory_block(memory: dict) -> str:
 def inject_memories(body: dict, metadata: dict) -> None:
     """Inject memories from metadata into the message body.
 
-    Memories are added as separate user message content blocks
-    AFTER the actual user message. This puts them closer to where
-    I generate my response (attention recency).
+    Memories are appended to the SAME text block as the user's prompt,
+    separated by blank lines. This keeps the message structure simple
+    and preserves cache_control attributes on the block.
+
+    Memories are DURABLE: on future turns, unwrap_structured_input()
+    will preserve them in context rather than stripping them.
 
     Modifies body in place.
 
@@ -91,13 +94,12 @@ def inject_memories(body: dict, metadata: dict) -> None:
         body: The request body dict
         metadata: The extracted metadata containing memories
     """
-    memories = metadata.get("memories", [])
-    queries = metadata.get("memory_queries", [])
+    mems = metadata.get("memories", [])
 
-    if not memories:
+    if not mems:
         return
 
-    logger.info(f"Injecting {len(memories)} memories (queries: {queries})")
+    logger.info(f"Injecting {len(mems)} memories into current turn")
 
     messages = body.get("messages", [])
     if not messages:
@@ -105,7 +107,8 @@ def inject_memories(body: dict, metadata: dict) -> None:
 
     # Find the last user message with actual text content
     # (not just tool_result blocks)
-    target_msg_idx = None
+    target_msg = None
+    target_block = None
     for i in range(len(messages) - 1, -1, -1):
         msg = messages[i]
         if msg.get("role") != "user":
@@ -113,43 +116,30 @@ def inject_memories(body: dict, metadata: dict) -> None:
 
         content = msg.get("content")
         if isinstance(content, str):
-            target_msg_idx = i
+            # Convert string to block format so we can append
+            msg["content"] = [{"type": "text", "text": content}]
+            target_msg = msg
+            target_block = msg["content"][0]
             break
         elif isinstance(content, list):
-            has_text = any(
-                isinstance(b, dict) and b.get("type") == "text"
-                for b in content
-            )
-            if has_text:
-                target_msg_idx = i
+            # Find the last text block in this message
+            for block in reversed(content):
+                if isinstance(block, dict) and block.get("type") == "text":
+                    target_msg = msg
+                    target_block = block
+                    break
+            if target_block:
                 break
 
-    if target_msg_idx is None:
+    if target_block is None:
         logger.debug("No suitable user message found for memory injection")
         return
 
-    # Format each memory as a content block
-    memory_blocks = []
-    for mem in memories:
-        block_text = format_memory_block(mem)
-        memory_blocks.append({"type": "text", "text": block_text})
+    # Format memories and append to the text block
+    memory_texts = [format_memory_block(mem) for mem in mems]
 
-    # Footer with hint about Memno
-    footer = "(Memno knows more. Use the Memno agent to ask follow-up questions.)"
+    # Append to existing text with blank line separator
+    existing_text = target_block.get("text", "")
+    target_block["text"] = existing_text + "\n\n" + "\n\n".join(memory_texts)
 
-    # Build the injection: memories + footer
-    injection_blocks = [
-        *memory_blocks,
-        {"type": "text", "text": footer},
-    ]
-
-    # Insert AFTER the target user message
-    # We do this by adding new user messages after the target
-    for block in injection_blocks:
-        messages.insert(target_msg_idx + 1, {
-            "role": "user",
-            "content": [block],
-        })
-        target_msg_idx += 1  # Keep inserting after the last inserted
-
-    logger.info(f"Injected {len(memories)} memories as {len(injection_blocks)} content blocks")
+    logger.info(f"Appended {len(mems)} memories to user message")
