@@ -39,7 +39,9 @@ async def get_memorables(session_id: str) -> list[str]:
         await r.aclose()
 
         if memorables:
-            logger.info(f"Found {len(memorables)} memorables for session {session_id[:8]}")
+            logger.debug(f"Found {len(memorables)} memorables for session {session_id[:8]}")
+        else:
+            logger.warning(f"No memorables for session {session_id[:8]}")
         return memorables
     except Exception as e:
         logger.error(f"Error reading memorables: {e}")
