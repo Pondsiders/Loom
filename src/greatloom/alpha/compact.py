@@ -85,30 +85,38 @@ FALLBACK_COMPACT_PROMPT = "Summarize the conversation so far."
 def rewrite_auto_compact(body: dict[str, Any]) -> dict[str, Any]:
     """Detect and rewrite auto-compact requests.
 
+    The SDK behavior is inconsistent—sometimes it replaces the system prompt
+    with a summarizer, sometimes it keeps the original. We can't rely on
+    system prompt detection alone.
+
+    Instead:
+    - Phase 1 (system prompt): AlphaPattern handles this upstream via soul
+      injection. We still do targeted replacement here if we see the
+      summarizer signature, but it's belt-and-suspenders.
+    - Phase 2 (compact instructions): Run unconditionally. The signature in
+      the user message is reliable—if it's not there, we do nothing.
+    - Phase 3 (continuation instruction): Run unconditionally. Same logic.
+
     Args:
         body: The request body dict
 
     Returns:
         body with compact prompts rewritten (if auto-compact detected)
     """
-    # Check for auto-compact by looking at system prompt
     system = body.get("system", [])
-    is_auto_compact = _detect_auto_compact(system)
 
-    if is_auto_compact:
-        logger.info("Auto-compact detected - rewriting for Alpha")
-
-        # Phase 1: Replace the summarizer system prompt
+    # Phase 1: Replace summarizer system prompt if present
+    # (Belt-and-suspenders—AlphaPattern also injects soul upstream)
+    if _detect_auto_compact(system):
+        logger.info("Auto-compact detected via system prompt signature")
         body["system"] = _replace_system_prompt(system)
 
-        # Phase 2: Replace compact instructions in last user message
-        _replace_compact_instructions(body)
+    # Phase 2: Replace compact instructions in last user message
+    # Run unconditionally—the signature is specific enough to not false-positive
+    _replace_compact_instructions(body)
 
-        logger.info("Auto-compact rewrite complete")
-
-    # Phase 3: Check for post-compact continuation instruction
+    # Phase 3: Replace post-compact continuation instruction
     # (This fires on the request AFTER compact, not during)
-    # Run unconditionally - the signatures are specific enough to not false-positive
     _replace_continuation_instruction(body)
 
     return body
@@ -161,6 +169,8 @@ def _replace_compact_instructions(body: dict[str, Any]) -> None:
     We find the signature, keep everything before it, and replace everything
     after it with Alpha's custom prompt.
     """
+    logger.debug("[Phase 2] Checking for compact instructions in user messages")
+
     # Get the compact prompt from git, or fall back
     compact_prompt = soul.get_compact()
     if compact_prompt is None:
@@ -181,11 +191,14 @@ def _replace_compact_instructions(body: dict[str, Any]) -> None:
                 idx = content.find(COMPACT_INSTRUCTIONS_START)
                 original = content[:idx].rstrip()
                 message["content"] = original + "\n\n" + compact_prompt
-                logger.debug("Replaced compact instructions in string content")
+                logger.info("[Phase 2] ✓ Replaced compact instructions in string content")
+            else:
+                logger.debug("[Phase 2] No compact signature in string content")
             return
 
         if isinstance(content, list):
-            for block in content:
+            logger.debug(f"[Phase 2] Checking {len(content)} content blocks in last user message")
+            for block_idx, block in enumerate(content):
                 if not isinstance(block, dict) or block.get("type") != "text":
                     continue
                 text = block.get("text", "")
@@ -193,10 +206,13 @@ def _replace_compact_instructions(body: dict[str, Any]) -> None:
                     idx = text.find(COMPACT_INSTRUCTIONS_START)
                     original = text[:idx].rstrip()
                     block["text"] = original + "\n\n" + compact_prompt
-                    logger.debug("Replaced compact instructions in content block")
+                    logger.info(f"[Phase 2] ✓ Replaced compact instructions in content block {block_idx}")
                     return
+            logger.debug("[Phase 2] No compact signature found in any content block")
+            return
 
         # Only check last user message
+        logger.debug("[Phase 2] Last user message has unexpected content type")
         return
 
 
