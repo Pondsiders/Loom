@@ -342,9 +342,34 @@ class AlphaPattern:
         # === Inject Intro memorables LAST ===
         # Intro goes at the very end—closest to response generation
         # This is the "nag" that reminds Alpha to store
+        #
+        # BUT: only inject on real user messages, not tool results.
+        # Tool results are plumbing—I don't need my inner voice interrupting
+        # mid-tool-chain. The edges live in conversation, not in Bash output.
         if memorables:
-            block = intro.format_block(memorables)
-            intro.inject_as_final_message(body, session_id, block)
+            # Check if the last user message is a tool result
+            messages = body.get("messages", [])
+            last_user_msg = None
+            for msg in reversed(messages):
+                if msg.get("role") == "user":
+                    last_user_msg = msg
+                    break
+
+            is_tool_result = False
+            if last_user_msg:
+                content = last_user_msg.get("content", [])
+                if isinstance(content, list):
+                    # If ANY block is a tool_result, this is tool plumbing
+                    is_tool_result = any(
+                        isinstance(block, dict) and block.get("type") == "tool_result"
+                        for block in content
+                    )
+
+            if is_tool_result:
+                logger.debug("Skipping Intro injection (tool result, not user message)")
+            else:
+                block = intro.format_block(memorables)
+                intro.inject_as_final_message(body, session_id, block)
 
         logger.info(f"Injected Alpha system prompt ({len(system_blocks)} blocks)")
 
