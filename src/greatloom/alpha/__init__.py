@@ -17,7 +17,7 @@ import logging
 
 import pendulum
 
-from . import soul, hud, capsule, intro, compact, memories, token_count, scrub
+from . import soul, hud, capsule, intro, compact, memories, token_count, scrub, context
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +188,7 @@ def unwrap_structured_input(body: dict) -> tuple[dict, dict | None]:
 
     return body, None
 
-__all__ = ["AlphaPattern", "soul", "hud", "capsule", "intro", "compact", "memories", "token_count", "scrub"]
+__all__ = ["AlphaPattern", "soul", "hud", "capsule", "intro", "compact", "memories", "token_count", "scrub", "context"]
 
 
 class AlphaPattern:
@@ -261,62 +261,67 @@ class AlphaPattern:
         )
 
         # === Build the system blocks ===
+        # Each logical piece gets its own block with a ## header.
+        # Blocks are free and can cache independently.
         system_blocks = []
 
-        # ETERNAL - my soul
-        eternal_text = f"【ETERNAL】\n{soul.get_soul()}\n【/ETERNAL】"
-        system_blocks.append({"type": "text", "text": eternal_text})
+        # Soul - who I am (rarely changes, good cache candidate)
+        system_blocks.append({"type": "text", "text": f"# Alpha\n\n{soul.get_soul()}"})
 
-        # PAST - capsule summaries + to_self letter + today
-        # Order: yesterday, last night, to_self, today so far
-        # Headers are added here (presentation layer), content comes from upstream
-        past_parts = []
+        # Capsules - what happened yesterday and last night
+        # Each capsule is its own block (they come with ## headers from capsule.py)
         if summary1:
-            past_parts.append(summary1)  # Has ## header from capsule.py
+            system_blocks.append({"type": "text", "text": summary1})
         if summary2:
-            past_parts.append(summary2)  # Has ## header from capsule.py
+            system_blocks.append({"type": "text", "text": summary2})
+
+        # Letter from last night (if present)
         if hud_data.to_self:
-            # Format header here—to_self routine stores raw letter
             time_str = f" ({hud_data.to_self_time})" if hud_data.to_self_time else ""
-            past_parts.append(f"## Letter from last night{time_str}\n\n{hud_data.to_self}")
+            system_blocks.append({
+                "type": "text",
+                "text": f"## Letter from last night{time_str}\n\n{hud_data.to_self}"
+            })
+
+        # Today so far (running summary)
         if hud_data.today_so_far:
-            # Format header here—today routine stores raw summary
-            # Include full date for orientation, especially post-compaction
             now = pendulum.now("America/Los_Angeles")
             date_str = now.format("dddd, MMMM D, YYYY")
             time_str = hud_data.today_so_far_time or now.format("h:mm A")
-            past_parts.append(f"## Today so far ({date_str}, {time_str})\n\n{hud_data.today_so_far}")
+            system_blocks.append({
+                "type": "text",
+                "text": f"## Today so far ({date_str}, {time_str})\n\n{hud_data.today_so_far}"
+            })
 
-        if past_parts:
-            past_text = "【PAST】\n\n" + "\n\n".join(past_parts) + "\n\n【/PAST】"
-            system_blocks.append({"type": "text", "text": past_text})
-
-        # PRESENT - client + machine + weather
+        # Here - where I am right now (client, machine, weather)
+        here_parts = []
         if client_name:
-            present_parts = [f"**Client:** {client_name.title()}"]
-            present_parts.append(f"\n**Machine:** {machine_name}")
-        else:
-            present_parts = [f"**Machine:** {machine_name}"]
+            here_parts.append(f"**Client:** {client_name.title()}")
+        here_parts.append(f"**Machine:** {machine_name}")
         if hud_data.weather:
-            present_parts.append(f"\n\n{hud_data.weather}")
+            here_parts.append(f"\n{hud_data.weather}")
+        system_blocks.append({"type": "text", "text": "## Here\n\n" + "\n".join(here_parts)})
 
-        present_text = f"【PRESENT】\n\n{''.join(present_parts)}\n\n【/PRESENT】"
-        system_blocks.append({"type": "text", "text": present_text})
+        # ALPHA.md context files
+        # Each 'all' file becomes its own block; 'when' hints are collected
+        context_blocks, context_hints = context.load_context()
+        for ctx in context_blocks:
+            system_blocks.append({
+                "type": "text",
+                "text": f"## Context: {ctx['path']}\n\n{ctx['content']}"
+            })
+        if context_hints:
+            hints_text = "## Context available\n\nThe following files contain additional context. Read them when relevant:\n\n"
+            hints_text += "\n".join(f"- {hint}" for hint in context_hints)
+            system_blocks.append({"type": "text", "text": hints_text})
 
-        # FUTURE - calendar + todos
-        future_parts = []
+        # Events - calendar
         if hud_data.calendar:
-            future_parts.append(hud_data.calendar)
-        if hud_data.todos:
-            if future_parts:
-                future_parts.append("\n\n")
-            future_parts.append(hud_data.todos)
+            system_blocks.append({"type": "text", "text": f"## Events\n\n{hud_data.calendar}"})
 
-        if future_parts:
-            future_text = f"【FUTURE】\n\n{''.join(future_parts)}\n\n【/FUTURE】"
-        else:
-            future_text = "【FUTURE】\n\nNo events\n\n【/FUTURE】"
-        system_blocks.append({"type": "text", "text": future_text})
+        # Todos
+        if hud_data.todos:
+            system_blocks.append({"type": "text", "text": f"## Todos\n\n{hud_data.todos}"})
 
         # === Inject system blocks into request ===
         # SDK sends: [0]=billing header, [1]=SDK boilerplate, [2]=our safety envelope
@@ -371,7 +376,8 @@ class AlphaPattern:
                 block = intro.format_block(memorables)
                 intro.inject_as_final_message(body, session_id, block)
 
-        logger.info(f"Injected Alpha system prompt ({len(system_blocks)} blocks)")
+        context_count = len(context_blocks) + (1 if context_hints else 0)
+        logger.info(f"Injected Alpha system prompt ({len(system_blocks)} blocks, {context_count} from ALPHA.md)")
 
         # === Checkpoint: Log fully-composed request (post-processing) ===
         try:
