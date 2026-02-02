@@ -72,8 +72,8 @@ def load_context() -> tuple[list[dict], list[str]]:
                 logger.debug(f"Loaded full context from {rel_path}")
 
             elif autoload == "when" and when:
-                # Just a hint with the condition
-                when_hints.append(f"`Read({rel_path})` when {when}")
+                # Directive hint with clear trigger conditions
+                when_hints.append(f"`Read({rel_path})` — **Topics:** {when}")
                 logger.debug(f"Added context hint for {rel_path}")
 
             # autoload: no (or anything else) -> skip silently

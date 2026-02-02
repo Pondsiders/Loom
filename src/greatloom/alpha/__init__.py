@@ -311,7 +311,8 @@ class AlphaPattern:
                 "text": f"## Context: {ctx['path']}\n\n{ctx['content']}"
             })
         if context_hints:
-            hints_text = "## Context available\n\nThe following files contain additional context. Read them when relevant:\n\n"
+            hints_text = "## Context available\n\n"
+            hints_text += "**BLOCKING REQUIREMENT:** When working on topics listed below, you MUST read the corresponding file BEFORE proceeding. Use the Read tool.\n\n"
             hints_text += "\n".join(f"- {hint}" for hint in context_hints)
             system_blocks.append({"type": "text", "text": hints_text})
 
