@@ -328,8 +328,17 @@ class AlphaPattern:
         # Everything in the system prompt changes at most hourly (HUD refresh).
         # Within any hour, subsequent requests will hit cache (90% discount).
         # One cache miss per hour is fine—way better than no caching at all.
-        if system_blocks:
-            system_blocks[-1]["cache_control"] = {"type": "ephemeral"}
+        #
+        # Commented out Monday Feb 2 2026 by Jeffery; suspect this may be causing
+        # Routines to fail with invalid_request_error: messages.0.content.3.cache_control.ttl:
+        # a ttl='1h' cache_control block must not come after a ttl='5m' cache_control block. 
+        # Note that blocks are processed in the following order: tools, system, messages.
+        # 
+        # if system_blocks:
+        #     system_blocks[-1]["cache_control"] = {"type": "ephemeral"}
+        #
+        # Yeah, confirmed by Jeffery Feb 2 2026 11:58 AM. The preceding piece of 
+        # code causes the API to throw 400 errors. Should investigate sometime.
 
         # === Inject system blocks into request ===
         # SDK sends: [0]=billing header, [1]=SDK boilerplate, [2]=our safety envelope
