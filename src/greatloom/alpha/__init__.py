@@ -323,6 +323,13 @@ class AlphaPattern:
         if hud_data.todos:
             system_blocks.append({"type": "text", "text": f"## Todos\n\n{hud_data.todos}"})
 
+        # === Add cache_control to the last block ===
+        # Everything in the system prompt changes at most hourly (HUD refresh).
+        # Within any hour, subsequent requests will hit cache (90% discount).
+        # One cache miss per hour is fine—way better than no caching at all.
+        if system_blocks:
+            system_blocks[-1]["cache_control"] = {"type": "ephemeral"}
+
         # === Inject system blocks into request ===
         # SDK sends: [0]=billing header, [1]=SDK boilerplate, [2]=our safety envelope
         # We keep [0], remove [1] and [2], add our soul blocks
