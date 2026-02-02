@@ -26,14 +26,14 @@ ALPHA_CANARY = "ALPHA_METADATA_UlVCQkVSRFVDSw"
 
 
 def _is_metadata_envelope(text: str) -> dict | None:
-    """Check if text is a valid metadata envelope. Returns parsed envelope or None.
+    """Check if text is a valid metadata envelope (OLD format with prompt inside).
 
     Six-layer defense against false positives:
     1. Text starts with '{' and ends with '}' (must BE JSON, not contain it)
     2. Parses as valid JSON
     3. Has 'canary' key
     4. Canary value matches ALPHA_CANARY exactly
-    5. Has 'prompt' key (our contract)
+    5. Has 'prompt' key (our contract for OLD format)
     6. (Caller ensures role==user and type==text)
 
     This protects against nightmare scenarios like the canary appearing in
@@ -55,11 +55,43 @@ def _is_metadata_envelope(text: str) -> dict | None:
     if envelope.get("canary") != ALPHA_CANARY:
         return None
 
-    # Layer 5: Must have prompt key
+    # Layer 5: Must have prompt key (this distinguishes OLD format from NEW)
     if "prompt" not in envelope:
         return None
 
     return envelope
+
+
+def _is_metadata_block(text: str) -> dict | None:
+    """Check if text is a metadata-only block (NEW format, no prompt inside).
+
+    This is the Feb 2026 format where the prompt is in separate content blocks
+    and metadata travels as an appended block. The metadata block does NOT
+    contain a 'prompt' key - that's what distinguishes it from the old format.
+
+    Returns parsed metadata or None.
+    """
+    text = text.strip()
+
+    # Must look like standalone JSON
+    if not (text.startswith("{") and text.endswith("}")):
+        return None
+
+    # Must parse as valid JSON
+    try:
+        metadata = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+    # Must have canary key with exact value
+    if metadata.get("canary") != ALPHA_CANARY:
+        return None
+
+    # Must NOT have prompt key (that's the old format)
+    if "prompt" in metadata:
+        return None
+
+    return metadata
 
 
 def _format_memory_inline(memory: dict) -> str:
@@ -118,19 +150,20 @@ def _build_unwrapped_text(envelope: dict) -> str:
 def unwrap_structured_input(body: dict) -> tuple[dict, dict | None]:
     """Unwrap structured input from Duckpond.
 
-    Duckpond sends user prompts wrapped in a JSON envelope. The SDK stores
-    these in the transcript as-is, so we need to clean ALL user messages,
-    not just the current one.
+    Supports TWO formats:
+    1. OLD: Prompt wrapped inside JSON envelope (has "prompt" key)
+       -> Replace envelope text with unwrapped prompt + memories
+    2. NEW (Feb 2026): Metadata as separate appended block (no "prompt" key)
+       -> Remove the metadata block entirely, preserve other content blocks
 
     Algorithm:
     1. Iterate over ALL messages
-    2. For each user message, find and replace metadata envelopes
-    3. Replace with: prompt + memories (as one concatenated string)
-    4. Keep metadata only from the LAST user message (current turn)
+    2. For each user message:
+       - OLD format: find envelope, replace with prompt + memories
+       - NEW format: find metadata block, extract and REMOVE it
+    3. Keep metadata only from the LAST user message (current turn)
 
-    Memories are DURABLE: they stay in context on future turns, providing
-    richer conversational texture. The dedup system ensures we don't see
-    the same memory twice.
+    Memories are DURABLE: they stay in context on future turns.
 
     Returns (body, metadata) - metadata is None if no structured input found.
     """
@@ -148,7 +181,7 @@ def unwrap_structured_input(body: dict) -> tuple[dict, dict | None]:
 
         content = msg.get("content")
 
-        # Handle string content
+        # Handle string content (OLD format only)
         if isinstance(content, str):
             envelope = _is_metadata_envelope(content)
             if envelope:
@@ -156,20 +189,41 @@ def unwrap_structured_input(body: dict) -> tuple[dict, dict | None]:
                 last_metadata = envelope
                 cleaned_count += 1
 
-        # Handle array of content blocks
+        # Handle array of content blocks (OLD or NEW format)
         elif isinstance(content, list):
-            for block in content:
-                # Layer 6b: Only process text blocks
+            blocks_to_remove = []
+
+            for i, block in enumerate(content):
+                # Only process text blocks
                 if not isinstance(block, dict) or block.get("type") != "text":
                     continue
 
                 text = block.get("text", "")
+
+                # Try OLD format first (envelope with prompt inside)
                 envelope = _is_metadata_envelope(text)
                 if envelope:
                     # Replace the block's text with prompt + memories
                     block["text"] = _build_unwrapped_text(envelope)
                     last_metadata = envelope
                     cleaned_count += 1
+                    continue
+
+                # Try NEW format (metadata-only block, no prompt)
+                metadata = _is_metadata_block(text)
+                if metadata:
+                    # Mark block for removal
+                    blocks_to_remove.append(i)
+                    last_metadata = metadata
+                    cleaned_count += 1
+                    # NOTE: No memory injection here anymore.
+                    # Memories are now added as content blocks by Gazebo,
+                    # so they're already in the array. We just remove metadata.
+
+            # Apply modifications AFTER iteration is complete
+            # Remove metadata blocks (in reverse order to preserve indices)
+            for i in reversed(blocks_to_remove):
+                content.pop(i)
 
     if cleaned_count > 0:
         mem_count = len(last_metadata.get("memories", [])) if last_metadata else 0
